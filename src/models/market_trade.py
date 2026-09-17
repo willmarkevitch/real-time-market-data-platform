@@ -4,9 +4,7 @@ from decimal import Decimal
 
 @dataclass
 class MarketTrade:
-    """
-    Represents a normalized market trade.
-    """
+    """ Represents a normalized market trade. """
     symbol: str
     price: Decimal
     size: int
