@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -72,6 +72,14 @@ def test_reject_infinite_size(valid_trade):
     with pytest.raises(ValueError, match="finite number"):
         normalize_alpaca_trade(valid_trade)
 
+def test_accept_integer_size(valid_trade):
+    valid_trade.size = 40
+
+    result = normalize_alpaca_trade(valid_trade)
+
+    assert result.size == 40
+    assert isinstance(result.size, int)
+
 
 # Price validation tests
 
@@ -101,3 +109,90 @@ def test_reject_infinite_price(valid_trade):
 
     with pytest.raises(ValueError, match="finite"):
         normalize_alpaca_trade(valid_trade)
+
+# Timestamp Validation Tests
+
+def test_reject_missing_timezone(valid_trade):
+    valid_trade.timestamp = datetime(2026, 9, 16, 20, 0)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_invalid_timestamp_type(valid_trade):
+    valid_trade.timestamp = "2026-09-16T20:00:00"
+
+    with pytest.raises(ValueError, match="datetime"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_normalize_timestamp_to_utc(valid_trade):
+    valid_trade.timestamp = datetime(
+        2026, 9, 16, 16, 0,
+        tzinfo=timezone(timedelta(hours=-4))
+    )
+
+    result = normalize_alpaca_trade(valid_trade)
+
+    assert result.timestamp == datetime(
+        2026, 9, 16, 20, 0, tzinfo=timezone.utc
+    )
+    assert result.timestamp.tzinfo is timezone.utc
+
+# Symbol Validation Tests
+
+
+def test_reject_empty_symbol(valid_trade):
+    valid_trade.symbol = ""
+
+    with pytest.raises(ValueError, match="symbol"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_whitespace_only_symbol(valid_trade):
+    valid_trade.symbol = " "
+    with pytest.raises(ValueError, match="symbol"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_none_symbol(valid_trade):
+    valid_trade.symbol = None
+
+    with pytest.raises(ValueError, match="symbol"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_strip_symbol(valid_trade):
+    valid_trade.symbol = " AAPL "
+
+    result = normalize_alpaca_trade(valid_trade)
+    assert result.symbol == "AAPL"
+
+# Exchange Validation Tests
+
+
+def test_reject_empty_exchange(valid_trade):
+    valid_trade.exchange = ""
+
+    with pytest.raises(ValueError, match="exchange"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_whitespace_only_exchange(valid_trade):
+    valid_trade.exchange = " "
+    with pytest.raises(ValueError, match="exchange"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_none_exchange(valid_trade):
+    valid_trade.exchange = None
+
+    with pytest.raises(ValueError, match="exchange"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_strip_exchange(valid_trade):
+    valid_trade.exchange = " V "
+
+    result = normalize_alpaca_trade(valid_trade)
+    assert result.exchange == "V"

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 from math import isfinite
 
@@ -23,22 +24,49 @@ def normalize_alpaca_trade(trade: Trade) -> MarketTrade:
     if trade.size <= 0:
         raise ValueError("Trade size must be positive.")
 
-    if not trade.size.is_integer():
+    if trade.size != int(trade.size):
         raise ValueError("Trade size must be a whole number.")
+
+    size = int(trade.size)
 
     # Price Validation
     price = Decimal(str(trade.price))
-
     if not price.is_finite():
         raise ValueError("Trade price must be a finite number.")
 
     if price <= 0:
         raise ValueError("Trade price must be positive.")
 
+    # Timestamp Validation
+    if not isinstance(trade.timestamp, datetime):
+        raise ValueError("Trade timestamp must have datetime data type.")
+
+    if (
+        trade.timestamp.tzinfo is None
+        or trade.timestamp.utcoffset() is None
+    ):
+        raise ValueError("Trade timestamp must be timezone-aware.")
+
+    timestamp = trade.timestamp.astimezone(timezone.utc)
+
+    # Symbol Validation
+    if not isinstance(trade.symbol, str) or not trade.symbol.strip():
+        raise ValueError("Trade symbol must be a non-empty string.")
+
+    symbol = trade.symbol.strip()
+
+    # Exchange Validation
+    if not isinstance(trade.exchange, str) or not trade.exchange.strip():
+        raise ValueError("Trade exchange must be a non-empty string.")
+
+    exchange = trade.exchange.strip()
+
+    # Create and return the MarketTrade object
+
     return MarketTrade(
-        symbol=trade.symbol,
+        symbol=symbol,
         price=price,
-        size=int(trade.size),
-        timestamp=trade.timestamp,
-        exchange=trade.exchange
+        size=size,
+        timestamp=timestamp,
+        exchange=exchange
     )
