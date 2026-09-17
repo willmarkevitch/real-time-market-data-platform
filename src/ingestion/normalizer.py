@@ -26,9 +26,18 @@ def normalize_alpaca_trade(trade: Trade) -> MarketTrade:
     if not trade.size.is_integer():
         raise ValueError("Trade size must be a whole number.")
 
+    # Price Validation
+    price = Decimal(str(trade.price))
+
+    if not price.is_finite():
+        raise ValueError("Trade price must be a finite number.")
+
+    if price <= 0:
+        raise ValueError("Trade price must be positive.")
+
     return MarketTrade(
         symbol=trade.symbol,
-        price=Decimal(str(trade.price)),
+        price=price,
         size=int(trade.size),
         timestamp=trade.timestamp,
         exchange=trade.exchange

@@ -37,6 +37,7 @@ def test_normalize_valid_trade(valid_trade):
 
 
 # Size validation tests
+
 def test_reject_fractional_size(valid_trade):
     valid_trade.size = 40.5
 
@@ -69,4 +70,34 @@ def test_reject_infinite_size(valid_trade):
     valid_trade.size = float("inf")
 
     with pytest.raises(ValueError, match="finite number"):
+        normalize_alpaca_trade(valid_trade)
+
+
+# Price validation tests
+
+def test_reject_zero_price(valid_trade):
+    valid_trade.price = 0.0
+
+    with pytest.raises(ValueError, match="positive"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_negative_price(valid_trade):
+    valid_trade.price = -10.0
+
+    with pytest.raises(ValueError, match="positive"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_nan_price(valid_trade):
+    valid_trade.price = float("nan")
+
+    with pytest.raises(ValueError, match="finite"):
+        normalize_alpaca_trade(valid_trade)
+
+
+def test_reject_infinite_price(valid_trade):
+    valid_trade.price = float("inf")
+
+    with pytest.raises(ValueError, match="finite"):
         normalize_alpaca_trade(valid_trade)
