@@ -22,6 +22,11 @@ async def handle_trade(trade):
 def main():
     from src.ingestion.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
 
+    logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     stream = StockDataStream(
         api_key=ALPACA_API_KEY,
         secret_key=ALPACA_SECRET_KEY,
