@@ -1,7 +1,7 @@
 import asyncio
 from unittest.mock import Mock, patch
 
-from src.ingestion.websocket_client import handle_trade
+from src.ingestion.websocket_client import handle_trade, main
 
 
 def test_handle_trade_calls_normalizer(capsys):
@@ -20,6 +20,7 @@ def test_handle_trade_calls_normalizer(capsys):
     captured = capsys.readouterr()
     assert captured.out == f"{normalized_trade}\n"
 
+
 def test_handle_trade_rejects_invalid_trade(caplog, capsys):
     incoming_trade = Mock()
 
@@ -34,3 +35,30 @@ def test_handle_trade_rejects_invalid_trade(caplog, capsys):
 
     assert "Rejected invalid trade: Trade price must be positive." in caplog.text
     assert capsys.readouterr().out == ""
+
+
+def test_main_configures_and_starts_stream():
+    with (
+        patch(
+            "src.ingestion.websocket_client.get_alpaca_credentials",
+            return_value=("test-api-key", "test-secret-key"),
+        ) as mock_credentials,
+        patch(
+            "src.ingestion.websocket_client.StockDataStream",
+        ) as mock_stream_class,
+    ):
+        main()
+
+        mock_credentials.assert_called_once_with()
+
+        mock_stream_class.assert_called_once_with(
+            api_key="test-api-key",
+            secret_key="test-secret-key",
+        )
+
+        mock_stream = mock_stream_class.return_value
+
+        mock_stream.subscribe_trades.assert_called_once_with(
+            handle_trade, "AAPL"
+        )
+        mock_stream.run.assert_called_once()

@@ -2,6 +2,7 @@ import logging
 
 from alpaca.data.live import StockDataStream
 
+from src.ingestion.config import get_alpaca_credentials
 from src.ingestion.normalizer import normalize_alpaca_trade
 
 
@@ -20,11 +21,16 @@ async def handle_trade(trade):
 
 
 def main():
-    from src.ingestion.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    api_key, secret_key = get_alpaca_credentials()
 
     stream = StockDataStream(
-        api_key=ALPACA_API_KEY,
-        secret_key=ALPACA_SECRET_KEY,
+        api_key=api_key,
+        secret_key=secret_key,
     )
 
     stream.subscribe_trades(handle_trade, "AAPL")
