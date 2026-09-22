@@ -29,7 +29,7 @@ def test_publish_queues_serialized_trade():
 
         # Assert: verify Kafka producer configuration.
         mock_producer_class.assert_called_once_with({
-            "bootstrap.servers": "localhost:9092",
+            "bootstrap.servers": "127.0.0.1:9092",
             "acks": "all",
         })
 

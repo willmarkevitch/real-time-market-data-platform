@@ -7,7 +7,7 @@ from src.ingestion.trade_serializer import serialize_trade
 class MarketTradeProducer:
     """Publish normalized market trades to Kafka."""
 
-    def __init__(self, bootstrap_servers: str = "localhost:9092"):
+    def __init__(self, bootstrap_servers: str = "127.0.0.1:9092"):
         self.producer = Producer({
             "bootstrap.servers": bootstrap_servers,
             "acks": "all",
