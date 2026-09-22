@@ -1,4 +1,5 @@
 import logging
+import threading
 
 from alpaca.data.live import StockDataStream
 
@@ -36,7 +37,20 @@ def main():
     stream.subscribe_trades(handle_trade, "AAPL")
 
     print("Starting Alpaca trade stream for AAPL...")
-    stream.run()
+
+    worker = threading.Thread(target=stream.run)
+    worker.start()
+
+    try:
+        while worker.is_alive():
+            worker.join(timeout=0.5)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested; stopping Alpaca stream...")
+        stream.stop()
+        worker.join(timeout=10)
+
+        if worker.is_alive():
+            logger.error("Alpaca stream did not stop within 10 seconds.")
 
 
 if __name__ == "__main__":
