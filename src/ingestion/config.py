@@ -1,12 +1,16 @@
 import os
+
 from dotenv import load_dotenv
 
-load_dotenv()
 
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+def get_alpaca_credentials():
+    """Load and validate Alpaca API credentials."""
+    load_dotenv()
 
-if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-    raise ValueError(
-        "API key and secret key must be set in the .env file."
-    )
+    api_key = os.getenv("ALPACA_API_KEY")
+    secret_key = os.getenv("ALPACA_SECRET_KEY")
+
+    if not api_key or not secret_key:
+        raise ValueError("Alpaca API key and secret key must be configured.")
+
+    return api_key, secret_key

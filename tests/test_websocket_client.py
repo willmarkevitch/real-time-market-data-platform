@@ -2,7 +2,6 @@ import asyncio
 from unittest.mock import Mock, patch
 
 from src.ingestion.websocket_client import handle_trade, main
-from src.ingestion.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
 
 
 def test_handle_trade_calls_normalizer(capsys):
@@ -39,14 +38,22 @@ def test_handle_trade_rejects_invalid_trade(caplog, capsys):
 
 
 def test_main_configures_and_starts_stream():
-    with patch(
-        "src.ingestion.websocket_client.StockDataStream"
-    ) as mock_stream_class:
+    with (
+        patch(
+            "src.ingestion.websocket_client.get_alpaca_credentials",
+            return_value=("test-api-key", "test-secret-key"),
+        ) as mock_credentials,
+        patch(
+            "src.ingestion.websocket_client.StockDataStream",
+        ) as mock_stream_class,
+    ):
         main()
 
+        mock_credentials.assert_called_once_with()
+
         mock_stream_class.assert_called_once_with(
-            api_key=ALPACA_API_KEY,
-            secret_key=ALPACA_SECRET_KEY,
+            api_key="test-api-key",
+            secret_key="test-secret-key",
         )
 
         mock_stream = mock_stream_class.return_value
