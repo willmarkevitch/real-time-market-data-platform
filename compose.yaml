@@ -1,0 +1,49 @@
+services:
+  kafka:
+    image: apache/kafka:4.1.1
+    container_name: market-data-kafka
+
+    ports:
+      - "127.0.0.1:9092:9092"
+
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: EXTERNAL://:9092,CONTROLLER://:9093,INTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://127.0.0.1:9092,INTERNAL://kafka:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+  kafka-init:
+    image: apache/kafka:4.1.1
+    depends_on:
+      - kafka
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        echo "Waiting for Kafka..."
+        until /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9094 --list >/dev/null 2>&1; do
+          sleep 2
+        done
+
+        echo "Creating market.trades if needed..."
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:9094 \
+          --create \
+          --if-not-exists \
+          --topic market.trades \
+          --partitions 3 \
+          --replication-factor 1
+
+        echo "Kafka topic initialization complete."
+
+volumes:
+  kafka_data:
