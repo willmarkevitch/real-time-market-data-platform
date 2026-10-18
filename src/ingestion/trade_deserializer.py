@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from src.models.market_trade import MarketTrade
+from src.models.trade_validation import validate_market_trade
 
 
 def deserialize_trade(payload: bytes) -> MarketTrade:
@@ -17,10 +18,4 @@ def deserialize_trade(payload: bytes) -> MarketTrade:
         exchange=data["exchange"],
     )
 
-    if not trade.price.is_finite() or trade.price <= 0:
-        raise ValueError("Trade price must be finite and positive")
-
-    if type(trade.size) is not int or trade.size <= 0:
-        raise ValueError("Trade size must be a positive integer")
-
-    return trade
+    return validate_market_trade(trade)

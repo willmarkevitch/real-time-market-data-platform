@@ -5,6 +5,7 @@ from math import isfinite
 from alpaca.data.models.trades import Trade
 
 from src.models.market_trade import MarketTrade
+from src.models.trade_validation import validate_market_trade
 
 def normalize_alpaca_trade(trade: Trade) -> MarketTrade:
     """
@@ -63,10 +64,12 @@ def normalize_alpaca_trade(trade: Trade) -> MarketTrade:
 
     # Create and return the MarketTrade object
 
-    return MarketTrade(
-        symbol=symbol,
-        price=price,
-        size=size,
-        timestamp=timestamp,
-        exchange=exchange
+    return validate_market_trade(
+        MarketTrade(
+            symbol=symbol,
+            price=price,
+            size=size,
+            timestamp=timestamp,
+            exchange=exchange
+        )
     )
