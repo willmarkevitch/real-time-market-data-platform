@@ -58,3 +58,28 @@ def test_run_consumer_closes_on_processing_failure():
         )
 
     consumer.close.assert_called_once()
+
+
+def test_run_consumer_passes_dlq_publisher_to_processor():
+    consumer = Mock()
+    process_trade = Mock()
+    publish_to_dlq = Mock()
+
+    with patch(
+        "src.ingestion.consumer_runner.process_next_trade"
+    ) as mock_process:
+        mock_process.side_effect = KeyboardInterrupt()
+
+        run_consumer(
+            consumer=consumer,
+            process_trade=process_trade,
+            publish_to_dlq=publish_to_dlq,
+        )
+
+        mock_process.assert_called_once_with(
+            consumer,
+            process_trade,
+            publish_to_dlq=publish_to_dlq,
+        )
+
+    consumer.close.assert_called_once()
