@@ -90,3 +90,19 @@ def test_process_next_trade_does_not_commit_invalid_json():
 
     process_trade.assert_not_called()
     consumer.commit.assert_not_called()
+
+
+def test_process_next_trade_does_nothing_when_no_message():
+    consumer = Mock()
+    process_trade = Mock()
+
+    consumer.poll.return_value = None
+
+    process_next_trade(
+        consumer=consumer,
+        process_trade=process_trade,
+    )
+
+    consumer.poll.assert_called_once_with(timeout=1.0)
+    process_trade.assert_not_called()
+    consumer.commit.assert_not_called()
