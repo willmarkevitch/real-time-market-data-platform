@@ -1,4 +1,8 @@
+import pytest
+
 from unittest.mock import patch
+
+from confluent_kafka import KafkaError, KafkaException
 
 from src.ingestion.kafka_consumer import MarketTradeConsumer
 
@@ -11,6 +15,8 @@ def test_consumer_subscribes_to_market_trades(mock_consumer_class):
         "bootstrap.servers": "127.0.0.1:9092",
         "group.id": "market-trade-consumers",
         "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
+        "enable.auto.offset.store": False,
     })
 
     mock_consumer_class.return_value.subscribe.assert_called_once_with(
@@ -21,6 +27,7 @@ def test_consumer_subscribes_to_market_trades(mock_consumer_class):
 def test_poll_returns_message():
     with patch("src.ingestion.kafka_consumer.Consumer") as mock_class:
         mock_message = mock_class.return_value.poll.return_value
+        mock_message.error.return_value = None
 
         consumer = MarketTradeConsumer()
         result = consumer.poll(timeout=1.0)
@@ -37,3 +44,38 @@ def test_poll_returns_none_when_no_message():
         result = consumer.poll(timeout=1.0)
 
         assert result is None
+
+
+def test_poll_raises_on_kafka_message_error():
+    with patch("src.ingestion.kafka_consumer.Consumer") as mock_class:
+        mock_message = mock_class.return_value.poll.return_value
+
+        kafka_error = KafkaError(KafkaError.UNKNOWN)
+        mock_message.error.return_value = kafka_error
+
+        consumer = MarketTradeConsumer()
+
+        with pytest.raises(KafkaException):
+            consumer.poll(timeout=1.0)
+
+
+def test_consumer_close():
+    with patch("src.ingestion.kafka_consumer.Consumer") as mock_class:
+        consumer = MarketTradeConsumer()
+
+        consumer.close()
+
+        mock_class.return_value.close.assert_called_once_with()
+
+
+def test_commit_acknowledges_processed_message():
+    with patch("src.ingestion.kafka_consumer.Consumer") as mock_class:
+        consumer = MarketTradeConsumer()
+        mock_message = mock_class.return_value.poll.return_value
+
+        consumer.commit(mock_message)
+
+        mock_class.return_value.commit.assert_called_once_with(
+            message=mock_message,
+            asynchronous=False,
+        )
