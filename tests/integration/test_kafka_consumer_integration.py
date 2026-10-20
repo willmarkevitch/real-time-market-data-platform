@@ -1,5 +1,6 @@
 import time
 import uuid
+import pytest
 
 from confluent_kafka import Consumer, Producer, TopicPartition
 
@@ -8,6 +9,7 @@ from src.ingestion.kafka_consumer import MarketTradeConsumer
 from src.ingestion.trade_processor import process_next_trade
 
 
+@pytest.mark.integration
 def test_consumer_receives_published_message():
     topic = "market.trades"
     payload = b'{"integration_test": true}'
@@ -64,6 +66,7 @@ def test_consumer_receives_published_message():
         consumer.close()
 
 
+@pytest.mark.integration
 def test_invalid_trade_is_published_to_dlq():
     payload = f"invalid-json-{uuid.uuid4()}".encode("utf-8")
     group_id = f"dlq-source-test-{uuid.uuid4()}"
