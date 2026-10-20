@@ -43,6 +43,15 @@ services:
           --partitions 3 \
           --replication-factor 1
 
+        echo "Creating market.trades.dlq if needed..."
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:9094 \
+          --create \
+          --if-not-exists \
+          --topic market.trades.dlq \
+          --partitions 3 \
+          --replication-factor 1
+
         echo "Kafka topic initialization complete."
 
 volumes:
