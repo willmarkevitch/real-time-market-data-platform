@@ -109,3 +109,35 @@ def test_dlq_publisher_raises_on_delivery_timeout():
 
         producer.produce.assert_called_once()
         producer.flush.assert_called_once_with(timeout=10.0)
+
+
+def test_dlq_publisher_includes_original_message_metadata():
+    message = Mock()
+
+    message.key.return_value = b"AAPL"
+    message.value.return_value = b"invalid JSON"
+    message.topic.return_value = "market.trades"
+    message.partition.return_value = 2
+    message.offset.return_value = 145
+
+    with patch(
+        "src.ingestion.dlq_publisher.Producer"
+    ) as mock_producer_class:
+        producer = mock_producer_class.return_value
+
+        def simulate_delivery(**kwargs):
+            kwargs["on_delivery"](None, Mock())
+
+        producer.produce.side_effect = simulate_delivery
+        producer.flush.return_value = 0
+
+        publisher = DeadLetterPublisher()
+        publisher.publish(message)
+
+        kwargs = producer.produce.call_args.kwargs
+
+        assert kwargs["headers"] == [
+            ("original_topic", b"market.trades"),
+            ("original_partition", b"2"),
+            ("original_offset", b"145"),
+        ]

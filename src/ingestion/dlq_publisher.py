@@ -33,6 +33,11 @@ class DeadLetterPublisher:
             topic=self.topic,
             key=message.key(),
             value=message.value(),
+            headers=[
+                ("original_topic", message.topic().encode("utf-8")),
+                ("original_partition", str(message.partition()).encode("utf-8")),
+                ("original_offset", str(message.offset()).encode("utf-8")),
+            ],
             on_delivery=on_delivery,
         )
 
