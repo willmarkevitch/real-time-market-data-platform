@@ -1,729 +1,295 @@
+
 # Real-Time Market Data Platform
 
-A real-time event-driven data pipeline for ingesting, validating, normalizing, and streaming U.S. equity market data from Alpaca through Apache Kafka.
+![Python](https://img.shields.io/badge/Python-3.14-blue)
+![Apache Kafka](https://img.shields.io/badge/Apache%20Kafka-4.1.1-black)
+![Docker](https://img.shields.io/badge/Docker-Compose-blue)
+![Tests](https://img.shields.io/badge/Tests-77%20passing-brightgreen)
 
-The project is designed to explore production-oriented streaming data engineering concepts including WebSocket ingestion, typed domain models, event serialization, Kafka producers, partitioned event streams, fault handling, containerized infrastructure, and automated testing.
+An event-driven data engineering project that ingests U.S. equity trade events from **Alpaca**, normalizes and validates them, and streams them through **Apache Kafka**. The project emphasizes reliable message delivery, explicit data contracts, failure handling, and test-driven development.
 
-## Table of Contents
-
-- [Architecture](#architecture)
-- [Features](#features)
-  - [Alpaca Market Data Integration](#alpaca-market-data-integration)
-  - [Typed Trade Model](#typed-trade-model)
-  - [Financial Data Precision](#financial-data-precision)
-- [Real-Time Streaming](#real-time-streaming)
-- [Apache Kafka](#apache-kafka)
-- [Kafka Infrastructure](#kafka-infrastructure)
-- [Kafka Producer](#kafka-producer)
-- [Verified End-to-End Flow](#verified-end-to-end-flow)
-- [Project Structure](#project-structure)
-- [Setup](#setup)
-- [Start Kafka](#start-kafka)
-- [Running Tests](#running-tests)
-- [Current Status](#current-status)
-- [Roadmap](#roadmap)
-  - [Kafka Consumer](#kafka-consumer)
-  - [Persistent Trade Storage](#persistent-trade-storage)
-  - [Stream Processing](#stream-processing)
-  - [Interactive Dashboard](#interactive-dashboard)
-  - [Observability](#observability)
-  - [Workflow and Infrastructure Improvements](#workflow-and-infrastructure-improvements)
-- [Future Architecture](#future-architecture)
-- [Technologies](#technologies)
-- [Why This Project?](#why-this-project)
-
----
+**Current status:** WebSocket ingestion, Kafka publishing and consumption, dead-letter handling, and automated tests are implemented. Streaming aggregations and PostgreSQL persistence are planned next.
 
 ## Architecture
 
 ```text
-                  Alpaca Market Data
-                         │
-                    WebSocket
-                         │
-                         ▼
-                 Streaming Client
-                         │
-                         ▼
-                    Normalizer
-                         │
-                         ▼
-                    MarketTrade
-                   typed data model
-                         │
-                         ▼
-                  JSON Serializer
-                         │
-                         ▼
-                   Kafka Producer
-                         │
-                         ▼
-                ┌─────────────────┐
-                │  market.trades  │
-                │   Kafka Topic   │
-                └─────────────────┘
-                         │
-                         ▼
-                 Kafka Consumers
-                    [roadmap]
-                         │
-              ┌──────────┴──────────┐
-              ▼                     ▼
-         Persistence           Live Analytics
-          [roadmap]              [roadmap]
+Alpaca market-data WebSocket
+             |
+             v
+    Trade normalization
+             |
+             v
+     MarketTrade model
+             |
+             v
+     JSON serialization
+             |
+             v
+       Kafka producer
+             |
+             v
+   Kafka topic: market.trades
+             |
+             v
+       Kafka consumer
+             |
+             v
+  Deserialize and validate
+             |
+       +-----+------+
+       |            |
+       v            v
+  Valid trade   Invalid payload
+       |            |
+       v            v
+ Processing      DLQ publisher
+  callback           |
+       |             v
+       |     market.trades.dlq
+       |
+       v
+  Future: OHLCV/VWAP aggregation
+          and PostgreSQL
 ```
 
-The currently implemented streaming path is:
+A valid trade is committed **after successful downstream processing**. An invalid payload is committed **after confirmed publication to the dead-letter topic**. If processing or dead-letter publication fails, the processing function does not commit the source offset, allowing the record to be replayed after recovery. This is an **at-least-once** design, not exactly-once processing; downstream operations should be idempotent where necessary.
 
-```text
-Alpaca WebSocket
-      ↓
-Trade normalization
-      ↓
-MarketTrade
-      ↓
-JSON serialization
-      ↓
-Kafka producer
-      ↓
-market.trades
-```
+## Implemented Features
 
----
+### Market-Data Ingestion and Data Contracts
 
-# Features
+- **Alpaca WebSocket integration:** Receives trade events from Alpaca's market-data stream.
+- **Typed domain model:** Converts provider-specific events into a `MarketTrade` model with symbol, price, size, timestamp, and exchange.
+- **Financial precision:** Represents prices with Python `Decimal` rather than binary floating-point arithmetic.
+- **Input validation:** Rejects invalid prices, nonpositive or fractional sizes, missing metadata, and timestamps without timezone information.
+- **Serialization:** Encodes normalized trades as UTF-8 JSON for Kafka transport and deserializes them on consumption.
 
-## Alpaca Market Data Integration
+### Kafka Messaging and Reliability
 
-The project integrates with Alpaca's market-data APIs for equity market data.
+- **Kafka producer:** Publishes normalized trades to `market.trades`, using the stock symbol as the message key.
+- **Delivery handling:** Uses delivery callbacks, failure tracking, and producer flushing during shutdown.
+- **Kafka consumer:** Supports configurable bootstrap servers, consumer groups, and subscribed topics.
+- **Manual offset management:** Disables automatic commits and commits only after successful processing or dead-letter delivery.
+- **Dead-letter queue (DLQ):** Sends malformed trade records to `market.trades.dlq`, preserving the original payload and key.
+- **Source metadata:** Adds `original_topic`, `original_partition`, and `original_offset` headers to dead-letter records for investigation.
+- **Consumer runner:** Provides a continuous processing loop with cleanup on keyboard interruption.
 
-API credentials are loaded from environment variables rather than being stored in source control.
+### Local Infrastructure
 
-Expected configuration includes:
+- **Docker Compose:** Runs Apache Kafka 4.1.1 in single-node KRaft mode.
+- **Topic initialization:** Creates `market.trades` and `market.trades.dlq` with three partitions each.
+- **Persistent broker data:** Uses a named Docker volume so ordinary container restarts do not erase Kafka data.
+- **Host/container networking:** Exposes Kafka to local Python processes on `127.0.0.1:9092` and uses an internal Docker listener for container communication.
 
-```text
-ALPACA_API_KEY
-ALPACA_SECRET_KEY
-```
+> **Development environment:** Kafka runs with a replication factor of one. This setup is intended for local development, not high-availability production deployment.
 
-The project has worked with both historical/latest market-data requests and live WebSocket-based ingestion as the streaming architecture has developed.
+## Technology Stack
 
----
+| Area | Technology |
+| --- | --- |
+| Language | Python 3.14 |
+| Market-data source | Alpaca API and WebSocket |
+| Streaming platform | Apache Kafka 4.1.1 |
+| Kafka Python client | `confluent-kafka` |
+| Data representation | Python dataclasses, `Decimal`, JSON |
+| Infrastructure | Docker, Docker Compose |
+| Testing | pytest, unittest mocking, Kafka integration tests |
+| Continuous integration | GitHub Actions |
+| Version control | Git, GitHub pull requests |
 
-## Typed Trade Model
+## Getting Started
 
-Raw provider-specific events are normalized into an internal `MarketTrade` model.
+### Prerequisites
 
-Conceptually:
+- Python 3.14
+- Docker Desktop with Docker Compose
+- An Alpaca account and market-data API credentials **for live ingestion**
 
-```python
-MarketTrade(
-    symbol="AAPL",
-    price=Decimal("..."),
-    size=...,
-    timestamp=...,
-    exchange="..."
-)
-```
+Kafka and synthetic-message integration tests do not require Alpaca credentials.
 
-Using an internal model prevents downstream components from depending directly on Alpaca's SDK objects.
-
-This creates a boundary between:
-
-```text
-External provider format
-        ↓
-Internal domain model
-        ↓
-Downstream systems
-```
-
-That separation also makes it easier to support another market-data provider in the future.
-
----
-
-## Financial Data Precision
-
-Trade prices use Python's `Decimal` rather than binary floating-point values.
-
-This avoids unnecessary floating-point representation issues when handling monetary values.
-
-Trade normalization also validates incoming data before it can continue through the pipeline.
-
-Validation includes conditions such as:
-
-- Positive prices
-- Positive trade sizes
-- Finite numeric values
-- Integer share sizes
-- Required trade metadata
-
-Invalid provider data is rejected rather than silently entering the streaming pipeline.
-
----
-
-# Real-Time Streaming
-
-The streaming layer consumes market events from Alpaca's WebSocket feed.
-
-Incoming trades pass through the normalization layer before being published downstream.
-
-```text
-Alpaca Trade
-     │
-     ▼
-handle_trade()
-     │
-     ▼
-normalize_alpaca_trade()
-     │
-     ▼
-MarketTrade
-     │
-     ▼
-serialize
-     │
-     ▼
-Kafka
-```
-
-Keeping normalization between the external WebSocket and Kafka ensures downstream consumers receive a consistent event format.
-
----
-
-# Apache Kafka
-
-Kafka provides the event backbone for the platform.
-
-The development Kafka environment runs in Docker using Kafka's KRaft architecture.
-
-The primary topic is:
-
-```text
-market.trades
-```
-
-Current development configuration includes:
-
-```text
-Partitions:         3
-Replication factor: 1
-```
-
-Three partitions allow the project to demonstrate partitioned event processing while remaining lightweight enough for local development.
-
-Trade messages use the stock symbol as the Kafka message key.
-
-For example:
-
-```text
-Key:   AAPL
-
-Value:
-{
-    "symbol": "AAPL",
-    "price": "...",
-    "size": 100,
-    "timestamp": "...",
-    "exchange": "..."
-}
-```
-
-Keying events by symbol provides a natural strategy for maintaining ordering for trades belonging to the same symbol while allowing different symbols to be distributed across partitions.
-
----
-
-# Kafka Infrastructure
-
-Kafka runs through Docker Compose.
-
-The development environment uses separate internal and external listeners so both containers and applications running on the host machine can communicate with the broker.
-
-Conceptually:
-
-```text
-Python application
-       │
-       │ localhost
-       ▼
-127.0.0.1:9092
-       │
-       ▼
-     Kafka
-       ▲
-       │
-       │ Docker network
-       │
-   kafka:9094
-```
-
-A Kafka initialization service ensures the required topic exists when the development environment starts.
-
-Kafka data is stored in a persistent Docker volume so stopping the containers does not automatically destroy broker state.
-
----
-
-# Kafka Producer
-
-Normalized trades are serialized to JSON and published using `confluent-kafka`.
-
-The producer includes:
-
-- JSON serialization
-- Symbol-based message keys
-- Delivery callbacks
-- Delivery-failure tracking
-- Graceful flushing during shutdown
-- Testable producer abstractions
-
-The pipeline therefore separates responsibilities:
-
-```text
-WebSocket Client
-      ↓
-Normalizer
-      ↓
-Serializer
-      ↓
-Producer
-      ↓
-Kafka Broker
-```
-
-rather than combining all streaming behavior into one component.
-
----
-
-# Verified End-to-End Flow
-
-The Kafka pipeline has been verified using a simulated trade.
-
-The test path successfully executed:
-
-```text
-Simulated trade
-      ↓
-handle_trade()
-      ↓
-Normalizer
-      ↓
-Serializer
-      ↓
-Kafka producer
-      ↓
-market.trades
-      ↓
-Kafka consumer
-```
-
-The consumer successfully received the keyed JSON event from Kafka, demonstrating that the complete application-to-broker path works.
-
----
-
-# Project Structure
-
-The repository follows a modular source layout similar to:
-
-```text
-real-time-market-data-platform/
-│
-├── src/
-│   ├── config/
-│   ├── ingestion/
-│   ├── models/
-│   └── streaming/
-│
-├── tests/
-│
-├── compose.yaml
-├── requirements.txt
-├── requirements-dev.txt
-├── .env.example
-└── README.md
-```
-
-Responsibilities are intentionally separated between:
-
-```text
-configuration
-     ↓
-external ingestion
-     ↓
-domain models
-     ↓
-normalization
-     ↓
-serialization
-     ↓
-streaming infrastructure
-```
-
----
-
-# Setup
-
-## 1. Clone the repository
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/willmarkevitch/real-time-market-data-platform.git
 cd real-time-market-data-platform
 ```
 
-## 2. Create a virtual environment
+### 2. Create and Activate a Virtual Environment
+
+On Windows using Git Bash:
 
 ```bash
 python -m venv venv
-```
-
-Activate it on Windows:
-
-```bash
 source venv/Scripts/activate
 ```
 
-or:
-
-```powershell
-.\venv\Scripts\Activate.ps1
-```
-
-## 3. Install dependencies
+On macOS/Linux:
 
 ```bash
-python -m pip install -r requirements.txt
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3. Install Dependencies
+
+```bash
 python -m pip install -r requirements-dev.txt
 ```
 
-## 4. Configure Alpaca credentials
+`requirements-dev.txt` includes the application dependencies from `requirements.txt` plus pytest.
 
-Create a local `.env` file based on `.env.example`.
+### 4. Configure Alpaca Credentials (for Live Ingestion)
 
-```text
-ALPACA_API_KEY=your_api_key
-ALPACA_SECRET_KEY=your_secret_key
+Copy `.env.example` to a local `.env` file and replace the placeholders with your credentials:
+
+```dotenv
+ALPACA_API_KEY=your_api_key_here
+ALPACA_SECRET_KEY=your_secret_key_here
 ```
 
-Do not commit `.env`.
+**Never commit your `.env` file or API credentials.** The repository's `.gitignore` excludes `.env`.
 
-The repository's `.gitignore` prevents local credentials and virtual-environment files from being tracked.
-
----
-
-# Start Kafka
-
-Start the local streaming infrastructure:
+### 5. Start Kafka
 
 ```bash
 docker compose up -d
 ```
 
-Check its status:
+Check container status:
 
 ```bash
 docker compose ps
 ```
 
-The initialization process ensures that:
+The `kafka-init` service creates the two required topics. If you need to rerun topic initialization explicitly:
 
-```text
-market.trades
+```bash
+docker compose run --rm kafka-init
 ```
 
-exists before the application begins publishing events.
-
-Kafka state is stored in a persistent named Docker volume.
-
-Stopping the environment with:
+To stop the environment without deleting persisted Kafka data:
 
 ```bash
 docker compose down
 ```
 
-stops the containers while preserving the Kafka volume.
+Avoid `docker compose down -v` unless you intentionally want to delete the broker's persistent volume.
 
-Start it again later with:
+### 6. Verify the Pipeline with Tests
+
+Run the fast unit-test suite (no Kafka broker required):
 
 ```bash
-docker compose up -d
+python -m pytest -m "not integration" -q
 ```
 
----
+With Kafka running, run the integration tests:
 
-# Running Tests
+```bash
+python -m pytest -m integration -v
+```
 
-Run the complete automated test suite:
+To run everything:
 
 ```bash
 python -m pytest -v
 ```
 
-Tests cover areas including:
+The repository also contains a simulated trade-pipeline smoke script at `tests/integration/smoke_trade_pipeline.py` for development verification. The current implementation is composed of reusable ingestion and consumer components; a unified production application entry point is not yet provided.
 
-- `MarketTrade` model behavior
-- Alpaca trade normalization
-- Invalid prices
-- Invalid trade sizes
-- Fractional sizes
-- Zero and negative values
-- NaN and infinite values
-- Serialization
-- WebSocket behavior
-- Streaming reliability
-- Kafka producer behavior
-- Delivery failures
-- Shutdown behavior
+## Testing and CI
 
-At the Kafka-producer milestone, the project contained **41 passing automated tests**.
+At the current milestone, the project has **77 passing tests**:
 
----
+| Suite | Tests | What it verifies |
+| --- | ---: | --- |
+| Unit tests | 75 | Models, validation, normalization, serialization, Kafka wrappers, processing, DLQ behavior, and shutdown logic |
+| Kafka integration tests | 2 | Real broker message consumption, dead-letter delivery, source metadata, and committed offsets |
 
-# Current Status
+GitHub Actions runs the unit-test suite on pushes and pull requests using Python 3.14 on Ubuntu:
 
-The core producer-side streaming architecture is implemented:
-
-```text
-Alpaca
-   ↓
-WebSocket ingestion
-   ↓
-Normalization
-   ↓
-Typed MarketTrade
-   ↓
-JSON serialization
-   ↓
-Kafka producer
-   ↓
-market.trades
+```bash
+python -m pytest -m "not integration" -q
 ```
 
-Completed components include:
+The Kafka integration tests currently run locally against Docker and are **not** part of CI. They use shared development topics; isolated test topics and automated Kafka-backed CI are planned improvements.
 
-- Alpaca configuration
-- API credential management
-- Typed `MarketTrade` model
-- Trade normalization
-- Financial-value validation
-- WebSocket ingestion architecture
-- Streaming reliability behavior
-- Kafka Docker infrastructure
-- Persistent Kafka storage
-- Automatic topic initialization
-- JSON event serialization
-- Kafka producer
-- Delivery callbacks
-- Producer failure tracking
-- Graceful producer shutdown
-- Automated unit tests
-- Simulated end-to-end Kafka verification
+## Selected Engineering Decisions
 
-The next major architectural step is building the **consumer side** of the platform.
+**Why Kafka?** Kafka decouples the incoming market-data feed from downstream processing. It also supports replayable events, consumer groups, and partitioned processing.
 
----
+**Why key messages by symbol?** Kafka sends messages with the same key to the same partition under the active partitioning scheme, preserving per-partition order for a symbol while allowing multiple symbols to be distributed across partitions.
 
-# Roadmap
+**Why `Decimal`?** Decimal arithmetic avoids binary floating-point representation artifacts in financial values.
 
-## Kafka Consumer
+**Why manual offset commits?** Committing only after successful processing or confirmed DLQ delivery avoids acknowledging a record before the application has handled it. This supports at-least-once recovery semantics, though failures between side effects and commits can still cause duplicates.
 
-Implement a dedicated consumer for:
+**Why a dead-letter topic?** Invalid payloads remain available for inspection and reprocessing instead of being silently dropped or repeatedly blocking normal consumption.
+
+**Why separate unit and integration tests?** Fast, deterministic tests can run on every pull request, while broker-backed tests verify real Kafka behavior without requiring external services in the basic CI job.
+
+## Project Layout
 
 ```text
-market.trades
+real-time-market-data-platform/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── src/
+│   ├── config/
+│   ├── ingestion/
+│   │   ├── consumer_runner.py
+│   │   ├── dlq_publisher.py
+│   │   ├── kafka_consumer.py
+│   │   ├── kafka_producer.py
+│   │   ├── normalizer.py
+│   │   ├── trade_deserializer.py
+│   │   ├── trade_processor.py
+│   │   ├── trade_serializer.py
+│   │   └── websocket_client.py
+│   └── models/
+│       ├── market_trade.py
+│       └── trade_validation.py
+├── tests/
+│   ├── integration/
+│   │   └── test_kafka_consumer_integration.py
+│   └── test_*.py
+├── compose.yaml
+├── pytest.ini
+├── requirements.txt
+├── requirements-dev.txt
+├── .env.example
+└── README.md
 ```
 
-The consumer will deserialize events and provide the boundary between the streaming system and downstream storage or analytics.
+The diagram highlights key files rather than every module or test.
 
-Target architecture:
+## Roadmap
 
-```text
-                    market.trades
-                          │
-                          ▼
-                    Kafka Consumer
-                          │
-                 ┌────────┴────────┐
-                 ▼                 ▼
-             Database          Analytics
-```
+### Next: Streaming Aggregation
 
-## Persistent Trade Storage
+- [ ] Aggregate trades into **one-minute OHLCV candles** by symbol.
+- [ ] Calculate **volume-weighted average price (VWAP)**.
+- [ ] Define event-time windowing behavior and tests for out-of-order events.
+- [ ] Connect aggregation to the Kafka consumer processing path.
 
-Add a database layer so streamed events can be queried after they leave Kafka.
+### Next: Persistence and Querying
 
-This will enable questions such as:
+- [ ] Persist trade-derived data in PostgreSQL.
+- [ ] Design schemas and idempotent writes for at-least-once consumption.
+- [ ] Support queries by symbol and time range.
 
-```text
-Latest trade for AAPL
-Trades during a time range
-Average price over a window
-Trade volume by symbol
-Recent market activity
-```
+### Later Improvements
 
-## Stream Processing
+- [ ] Isolate Kafka integration tests and run them in CI.
+- [ ] Add a runnable application entry point and operational configuration.
+- [ ] Improve structured logging, metrics, and shutdown handling.
+- [ ] Track consumer lag, delivery failures, and processing latency.
+- [ ] Explore a dashboard or API for querying recent market activity.
+- [ ] Evaluate deployment and scaling options beyond local Docker.
 
-Introduce rolling or windowed calculations such as:
+## Development Approach
 
-- Trade count per minute
-- Volume per minute
-- Rolling average price
-- Price changes
-- High/low values
-- Per-symbol event throughput
+This project is built incrementally using **test-driven development**, feature branches, pull requests, and GitHub Actions. Each milestone focuses on a specific engineering concern—data contracts, message delivery, fault handling, and, next, stream processing and persistence.
 
-## Interactive Dashboard
-
-Build a Streamlit dashboard where a user can select a stock ticker and view live or recently persisted market data.
-
-Potential interface:
-
-```text
-Ticker: [ AAPL ▼ ]
-
-Current price
-Recent trades
-Price history
-Volume
-Streaming status
-```
-
-## Observability
-
-Add operational metrics for the pipeline itself rather than only the financial data.
-
-Examples include:
-
-- Events received per second
-- Events published per second
-- Producer failures
-- Consumer lag
-- WebSocket reconnects
-- Processing latency
-- Kafka availability
-
-These metrics could eventually be visualized through tools such as Grafana.
-
-## Workflow and Infrastructure Improvements
-
-Longer-term improvements may include:
-
-- Structured logging
-- Schema evolution/versioning
-- Dead-letter handling
-- Consumer retry behavior
-- PostgreSQL or time-series persistence
-- CI/CD
-- Integration testing against Kafka
-- Cloud deployment
-- Multiple consumers
-- Additional market-data event types
-
----
-
-# Future Architecture
-
-The longer-term platform is intended to evolve toward:
-
-```text
-                         Alpaca
-                           │
-                      WebSocket
-                           │
-                           ▼
-                       Ingestion
-                           │
-                           ▼
-                      Normalization
-                           │
-                           ▼
-                    Kafka Producer
-                           │
-                           ▼
-                    market.trades
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-              ▼            ▼            ▼
-         Persistence    Analytics    Monitoring
-          Consumer      Consumer      Consumer
-              │            │            │
-              ▼            ▼            ▼
-          PostgreSQL    Streamlit      Metrics
-              │                         │
-              ▼                         ▼
-       Historical API                Grafana
-```
-
-Kafka allows multiple downstream systems to consume the same trade stream independently without coupling them directly to the Alpaca WebSocket connection.
-
----
-
-# Technologies
-
-**Language**
-
-Python
-
-**Market Data**
-
-Alpaca API / WebSocket
-
-**Streaming**
-
-Apache Kafka
-
-**Kafka Client**
-
-confluent-kafka
-
-**Infrastructure**
-
-Docker / Docker Compose
-
-**Testing**
-
-pytest
-
-**Data Formats**
-
-JSON
-
-**Engineering Concepts**
-
-Real-Time Data • Event-Driven Architecture • WebSockets • Kafka • Producers • Consumers • Partitioning • Serialization • Data Validation • Domain Models • Financial Data Precision • Fault Handling • Containerization • Automated Testing
-
----
-
-# Why This Project?
-
-The goal of this project is to go beyond simply requesting stock prices from an API.
-
-The project demonstrates how a basic market-data application can evolve from:
-
-```text
-API → Python
-```
-
-into a real-time event-driven data platform:
-
-```text
-WebSocket
-    ↓
-Validation
-    ↓
-Domain Model
-    ↓
-Kafka
-    ↓
-Consumers
-    ↓
-Persistent Storage
-    ↓
-Analytics
-    ↓
-Observability
-```
-
-The architecture intentionally separates ingestion, normalization, transport, storage, and analytics so each component can evolve independently.
-
-Development is performed incrementally using feature branches, pull requests, automated testing, and small architectural milestones to mirror a professional software and data engineering workflow.
+The goal is to build an understandable, testable streaming system while documenting the tradeoffs involved in moving from a basic market-data API integration toward a more complete data platform.
