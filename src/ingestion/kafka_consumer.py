@@ -1,19 +1,25 @@
+
 from confluent_kafka import Consumer, KafkaException
 
 
 class MarketTradeConsumer:
     """Consume normalized market trades from Kafka."""
 
-    def __init__(self, bootstrap_servers: str = "127.0.0.1:9092"):
+    def __init__(
+        self,
+        bootstrap_servers: str = "127.0.0.1:9092",
+        group_id: str = "market-trade-consumers",
+        topic: str = "market.trades"
+    ):
         self.consumer = Consumer({
             "bootstrap.servers": bootstrap_servers,
-            "group.id": "market-trade-consumers",
+            "group.id": group_id,
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,
             "enable.auto.offset.store": False,
         })
 
-        self.consumer.subscribe(["market.trades"])
+        self.consumer.subscribe([topic])
 
     def poll(self, timeout: float = 1.0):
         """Retrieve the next Kafka message, raising on Kafka errors."""

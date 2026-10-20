@@ -1,6 +1,6 @@
 import pytest
 
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from confluent_kafka import KafkaError, KafkaException
 
@@ -79,3 +79,18 @@ def test_commit_acknowledges_processed_message():
             message=mock_message,
             asynchronous=False,
         )
+
+
+def test_consumer_subscribes_to_custom_topic(monkeypatch):
+    mock_consumer = MagicMock()
+
+    monkeypatch.setattr(
+        "src.ingestion.kafka_consumer.Consumer",
+        lambda config: mock_consumer,
+    )
+
+    MarketTradeConsumer(topic="test.market.trades")
+
+    mock_consumer.subscribe.assert_called_once_with(
+        ["test.market.trades"]
+    )
