@@ -117,3 +117,23 @@ class TradeBarAggregator:
                 del self._bars[key]
 
         return finalized
+
+    def get_ready_windows(self):
+        """Return finalized-ready candles without removing them."""
+        if self._latest_event_time is None:
+            return []
+
+        watermark = self._latest_event_time - self._allowed_lateness
+        ready = []
+
+        for bar in self._bars.values():
+            window_end = bar.window_start + timedelta(minutes=1)
+
+            if window_end <= watermark:
+                ready.append(bar)
+
+        return ready
+
+    def remove_bar(self, symbol, window_start):
+        """Remove a candle after successful publishing."""
+        del self._bars[(symbol, window_start)]
