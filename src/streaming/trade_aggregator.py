@@ -1,5 +1,5 @@
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -22,10 +22,25 @@ class TradeBar:
 
 
 class TradeBarAggregator:
-    def __init__(self):
+    def __init__(self, allowed_lateness_seconds=30):
+        if allowed_lateness_seconds < 0:
+            raise ValueError("Allowed lateness cannot be negative")
+
         self._bars = {}
+        self._latest_event_time = None
+        self._allowed_lateness = timedelta(
+            seconds=allowed_lateness_seconds
+        )
 
     def add_trade(self, trade: MarketTrade):
+        event_time = trade.timestamp.astimezone(timezone.utc)
+
+        if (
+            self._latest_event_time is None
+            or event_time > self._latest_event_time
+        ):
+            self._latest_event_time = event_time
+        
         window_start = (
             trade.timestamp
             .astimezone(timezone.utc)
@@ -33,6 +48,15 @@ class TradeBarAggregator:
         )
 
         key = (trade.symbol, window_start)
+
+        
+        # Reject trades for windows that are already behind the watermark
+        watermark = self._latest_event_time - self._allowed_lateness
+        window_end = window_start + timedelta(minutes=1)
+
+        if window_end <= watermark:
+            raise ValueError("Trade arrived too late for its window")
+
 
         if key in self._bars:
             bar = self._bars[key]
@@ -75,3 +99,21 @@ class TradeBarAggregator:
 
     def get_bar(self, symbol, window_start):
         return self._bars[(symbol, window_start)]
+
+    
+    def finalize_ready_windows(self):
+        if self._latest_event_time is None:
+            return []
+
+        watermark = self._latest_event_time - self._allowed_lateness
+
+        finalized = []
+
+        for key, bar in list(self._bars.items()):
+            window_end = bar.window_start + timedelta(minutes=1)
+
+            if window_end <= watermark:
+                finalized.append(bar)
+                del self._bars[key]
+
+        return finalized

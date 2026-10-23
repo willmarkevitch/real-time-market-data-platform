@@ -1,4 +1,4 @@
-
+import pytest
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -197,3 +197,196 @@ def test_out_of_order_trades_use_event_time_for_open_and_close():
     assert bar.close == Decimal("202")
     assert bar.volume == 30
     assert bar.vwap == Decimal("201.1666666666666666666666667")
+
+
+
+def test_finalizes_completed_windows_after_watermark():
+    aggregator = TradeBarAggregator()
+
+    trades = [
+        MarketTrade(
+            "AAPL",
+            Decimal("200"),
+            10,
+            datetime(2026, 10, 22, 14, 30, 15, tzinfo=timezone.utc),
+            "NASDAQ",
+        ),
+        MarketTrade(
+            "AAPL",
+            Decimal("202"),
+            5,
+            datetime(2026, 10, 22, 14, 30, 45, tzinfo=timezone.utc),
+            "NASDAQ",
+        ),
+        MarketTrade(
+            "AAPL",
+            Decimal("205"),
+            20,
+            datetime(2026, 10, 22, 14, 32, 10, tzinfo=timezone.utc),
+            "NASDAQ",
+        ),
+    ]
+
+    for trade in trades:
+        aggregator.add_trade(trade)
+
+    finalized = aggregator.finalize_ready_windows()
+
+    assert len(finalized) == 1
+
+    bar = finalized[0]
+
+    assert bar.symbol == "AAPL"
+    assert bar.window_start == datetime(
+        2026, 10, 22, 14, 30, tzinfo=timezone.utc
+    )
+    assert bar.open == Decimal("200")
+    assert bar.close == Decimal("202")
+    assert bar.volume == 15
+
+
+
+def test_finalized_windows_are_removed_from_active_state():
+    aggregator = TradeBarAggregator()
+
+    aggregator.add_trade(
+        MarketTrade(
+            "AAPL",
+            Decimal("200"),
+            10,
+            datetime(2026, 10, 22, 14, 30, 15, tzinfo=timezone.utc),
+            "NASDAQ",
+        )
+    )
+
+    aggregator.add_trade(
+        MarketTrade(
+            "AAPL",
+            Decimal("205"),
+            20,
+            datetime(2026, 10, 22, 14, 32, 10, tzinfo=timezone.utc),
+            "NASDAQ",
+        )
+    )
+
+    finalized = aggregator.finalize_ready_windows()
+
+    assert len(finalized) == 1
+
+    # The finalized 14:30 candle should no longer be accessible.
+    with pytest.raises(KeyError):
+        aggregator.get_bar(
+            "AAPL",
+            datetime(2026, 10, 22, 14, 30, tzinfo=timezone.utc),
+        )
+
+    # The active 14:32 candle should still be accessible.
+    active_bar = aggregator.get_bar(
+        "AAPL",
+        datetime(2026, 10, 22, 14, 32, tzinfo=timezone.utc),
+    )
+
+    assert active_bar.open == Decimal("205")
+    assert active_bar.volume == 20
+
+
+
+def test_rejects_trade_arriving_after_window_finalization():
+    aggregator = TradeBarAggregator()
+
+    aggregator.add_trade(
+        MarketTrade(
+            "AAPL",
+            Decimal("200"),
+            10,
+            datetime(2026, 10, 22, 14, 30, 15, tzinfo=timezone.utc),
+            "NASDAQ",
+        )
+    )
+
+    aggregator.add_trade(
+        MarketTrade(
+            "AAPL",
+            Decimal("205"),
+            20,
+            datetime(2026, 10, 22, 14, 32, 10, tzinfo=timezone.utc),
+            "NASDAQ",
+        )
+    )
+
+    aggregator.finalize_ready_windows()
+
+    with pytest.raises(ValueError, match="late"):
+        aggregator.add_trade(
+            MarketTrade(
+                "AAPL",
+                Decimal("202"),
+                5,
+                datetime(2026, 10, 22, 14, 30, 45, tzinfo=timezone.utc),
+                "NASDAQ",
+            )
+        )
+
+
+
+def test_rejects_trade_when_window_end_equals_watermark():
+    aggregator = TradeBarAggregator(allowed_lateness_seconds=30)
+
+    # Advances the watermark to exactly 14:31:00
+    aggregator.add_trade(
+        MarketTrade(
+            "AAPL",
+            Decimal("205"),
+            10,
+            datetime(2026, 10, 22, 14, 31, 30, tzinfo=timezone.utc),
+            "NASDAQ",
+        )
+    )
+
+    # The 14:30 window ended at 14:31:00
+    with pytest.raises(ValueError, match="late"):
+        aggregator.add_trade(
+            MarketTrade(
+                "AAPL",
+                Decimal("200"),
+                5,
+                datetime(2026, 10, 22, 14, 30, 45, tzinfo=timezone.utc),
+                "NASDAQ",
+            )
+        )
+
+
+
+def test_accepts_out_of_order_trade_in_open_window():
+    aggregator = TradeBarAggregator(allowed_lateness_seconds=30)
+
+    aggregator.add_trade(
+        MarketTrade(
+            "AAPL",
+            Decimal("205"),
+            10,
+            datetime(2026, 10, 22, 14, 31, 45, tzinfo=timezone.utc),
+            "NASDAQ",
+        )
+    )
+
+    # Older than the watermark (14:31:15),
+    # but its 14:31 window remains open.
+    aggregator.add_trade(
+        MarketTrade(
+            "AAPL",
+            Decimal("200"),
+            5,
+            datetime(2026, 10, 22, 14, 31, 10, tzinfo=timezone.utc),
+            "NASDAQ",
+        )
+    )
+
+    bar = aggregator.get_bar(
+        "AAPL",
+        datetime(2026, 10, 22, 14, 31, tzinfo=timezone.utc),
+    )
+
+    assert bar.open == Decimal("200")
+    assert bar.close == Decimal("205")
+    assert bar.volume == 15
