@@ -1,3 +1,4 @@
+
 services:
   kafka:
     image: apache/kafka:4.1.1
@@ -26,11 +27,15 @@ services:
     image: apache/kafka:4.1.1
     depends_on:
       - kafka
+
     entrypoint: ["/bin/bash", "-ec"]
+
     command:
       - |
         echo "Waiting for Kafka..."
-        until /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9094 --list >/dev/null 2>&1; do
+        until /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:9094 \
+          --list >/dev/null 2>&1; do
           sleep 2
         done
 
@@ -50,6 +55,15 @@ services:
           --if-not-exists \
           --topic market.trades.dlq \
           --partitions 3 \
+          --replication-factor 1
+
+        echo "Creating market.candles.1m if needed..."
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:9094 \
+          --create \
+          --if-not-exists \
+          --topic market.candles.1m \
+          --partitions 1 \
           --replication-factor 1
 
         echo "Kafka topic initialization complete."

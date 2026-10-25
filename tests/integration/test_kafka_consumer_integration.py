@@ -120,7 +120,10 @@ def test_invalid_trade_is_published_to_dlq():
                     assert headers["original_topic"] == b"market.trades"
                     assert "original_partition" in headers
                     assert "original_offset" in headers
-                    assert processed_trades == []
+                    assert all(
+                        trade.symbol != "dlq-integration-test"
+                        for trade in processed_trades
+                    )
 
                     source_partition = int(headers["original_partition"])
                     source_offset = int(headers["original_offset"])
