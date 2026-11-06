@@ -121,3 +121,95 @@ def test_tracker_rejects_confirmation_inside_offset_gap():
 
     # Invalid confirmation must not alter state.
     assert tracker.committable_offset("market.trades", 0) == 44
+
+
+def test_tracker_exposes_tracked_partitions():
+    tracker = OffsetTracker()
+
+    tracker.register("market.trades", 0, 41)
+    tracker.register("market.trades", 1, 100)
+    tracker.register("market.quotes", 0, 25)
+
+    assert set(tracker.tracked_partitions()) == {
+        ("market.trades", 0),
+        ("market.trades", 1),
+        ("market.quotes", 0),
+    }
+
+
+def test_tracker_associates_record_with_candle():
+    tracker = OffsetTracker()
+
+    tracker.register("market.trades", 0, 41)
+
+    candle_key = ("AAPL", "2026-10-22T14:30:00+00:00")
+
+    tracker.associate_candle(
+        "market.trades",
+        0,
+        41,
+        candle_key,
+    )
+
+    assert tracker.offsets_for_candle(candle_key) == [
+        ("market.trades", 0, 41)
+    ]
+
+
+def test_tracker_does_not_duplicate_candle_associations():
+    tracker = OffsetTracker()
+
+    tracker.register("market.trades", 0, 41)
+
+    candle_key = ("AAPL", "2026-10-22T14:30:00+00:00")
+
+    tracker.associate_candle(
+        "market.trades", 0, 41, candle_key
+    )
+    tracker.associate_candle(
+        "market.trades", 0, 41, candle_key
+    )
+
+    assert tracker.offsets_for_candle(candle_key) == [
+        ("market.trades", 0, 41)
+    ]
+
+
+def test_tracker_rejects_unregistered_candle_association():
+    tracker = OffsetTracker()
+
+    candle_key = ("AAPL", "2026-10-22T14:30:00+00:00")
+
+    with pytest.raises(
+        ValueError,
+        match="Record must be registered before candle association",
+    ):
+        tracker.associate_candle(
+            "market.trades",
+            0,
+            41,
+            candle_key,
+        )
+
+    assert tracker.offsets_for_candle(candle_key) == []
+
+
+def test_tracker_rejects_unknown_offset_in_registered_partition():
+    tracker = OffsetTracker()
+
+    tracker.register("market.trades", 0, 41)
+
+    candle_key = ("AAPL", "2026-10-22T14:30:00+00:00")
+
+    with pytest.raises(
+        ValueError,
+        match="Record must be registered before candle association",
+    ):
+        tracker.associate_candle(
+            "market.trades",
+            0,
+            42,
+            candle_key,
+        )
+
+    assert tracker.offsets_for_candle(candle_key) == []

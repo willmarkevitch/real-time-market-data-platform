@@ -3,6 +3,7 @@ class OffsetTracker:
 
     def __init__(self):
         self._partitions = {}
+        self._candle_offsets = {}
 
     def register(self, topic, partition, offset):
         """Register consumed Kafka records in increasing offset order."""
@@ -93,3 +94,29 @@ class OffsetTracker:
                 del records[completed_offset]
 
         state["next_offset"] = offset
+
+    def tracked_partitions(self):
+        """Return the topic-partition pairs currently being tracked."""
+        return list(self._partitions.keys())
+
+    def associate_candle(self, topic, partition, offset, candle_key):
+        """Associate a registered Kafka record with a candle."""
+        state = self._partitions.get((topic, partition))
+
+        if state is None or offset not in state["records"]:
+            raise ValueError(
+                "Record must be registered before candle association"
+            )
+
+        if candle_key not in self._candle_offsets:
+            self._candle_offsets[candle_key] = []
+
+        record = (topic, partition, offset)
+
+        if record not in self._candle_offsets[candle_key]:
+            self._candle_offsets[candle_key].append(record)
+
+
+    def offsets_for_candle(self, candle_key):
+        """Return Kafka records associated with a candle."""
+        return list(self._candle_offsets.get(candle_key, []))

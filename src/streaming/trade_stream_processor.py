@@ -63,34 +63,57 @@ class TradeStreamProcessor:
             asynchronous=False,
         )
 
-        # Kafka may return a partition-level error even when
-        # the synchronous commit call itself does not raise.
         if not committed_partitions:
             raise RuntimeError(
                 "Kafka offset commit failed: no confirmation returned"
             )
 
-        for committed_partition in committed_partitions:
-            if committed_partition.error is not None:
-                raise RuntimeError(
-                    f"Kafka offset commit failed: "
-                    f"{committed_partition.error}"
-                )
+        if len(committed_partitions) != 1:
+            raise RuntimeError(
+                "Kafka commit confirmation mismatch: "
+                "unexpected number of partitions"
+            )
 
-        # Only update our tracker after Kafka confirms success.
+        committed_partition = committed_partitions[0]
+
+        if committed_partition.error is not None:
+            raise RuntimeError(
+                f"Kafka offset commit failed: "
+                f"{committed_partition.error}"
+            )
+
+        if (
+            committed_partition.topic != topic
+            or committed_partition.partition != partition
+            or committed_partition.offset != offset
+        ):
+            raise RuntimeError(
+                "Kafka commit confirmation mismatch"
+            )
+
+        # Advance our tracker only after validating Kafka's response.
         self.offset_tracker.confirm_commit(
             topic,
             partition,
             offset,
         )
 
+    def retry_pending_commits(self):
+        """Retry completed offsets that have not been committed."""
+        for topic, partition in self.offset_tracker.tracked_partitions():
+            self.commit_completed_offsets(topic, partition)
+        
     def process_next(self):
         """Process a Kafka trade and retry pending candle publications."""
         message = self.consumer.poll()
 
         if message is None:
             self.publish_ready_windows()
+            self.retry_pending_commits()
             return None
+
+        # Retry previously completed offsets even during active traffic.
+        self.retry_pending_commits()
 
         topic = message.topic()
         partition = message.partition()

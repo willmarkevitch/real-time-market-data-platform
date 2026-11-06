@@ -9,6 +9,22 @@ from src.streaming.trade_aggregator import TradeBarAggregator
 from src.streaming.trade_stream_processor import TradeStreamProcessor
 
 
+def make_kafka_message(
+    payload=b"serialized-trade",
+    topic="market.trades",
+    partition=0,
+    offset=0,
+):
+    """Create a mocked Kafka message with realistic metadata."""
+    message = Mock()
+
+    message.value.return_value = payload
+    message.topic.return_value = topic
+    message.partition.return_value = partition
+    message.offset.return_value = offset
+
+    return message
+
 def test_processor_adds_consumed_trade_to_aggregator():
     trade = MarketTrade(
         "AAPL",
@@ -149,10 +165,11 @@ def test_processor_publishes_finalized_candle():
             "NASDAQ",
         ),
     ]
-
-    messages = [Mock(), Mock()]
-    for message in messages:
-        message.value.return_value = b"serialized-trade"
+    
+    messages = [
+        make_kafka_message(offset=41),
+        make_kafka_message(offset=42),
+    ]
 
     consumer = Mock()
     consumer.poll.side_effect = messages
@@ -205,9 +222,10 @@ def test_publishing_failure_preserves_finalized_candle():
         ),
     ]
 
-    messages = [Mock(), Mock()]
-    for message in messages:
-        message.value.return_value = b"serialized-trade"
+    messages = [
+        make_kafka_message(offset=offset)
+        for offset in range(41, 41 + len(trades))
+    ]
 
     consumer = Mock()
     consumer.poll.side_effect = messages
@@ -272,10 +290,10 @@ def test_failed_candle_can_be_published_on_next_trade():
         ),
     ]
 
-    messages = [Mock() for _ in trades]
-
-    for message in messages:
-        message.value.return_value = b"serialized-trade"
+    messages = [
+        make_kafka_message(offset=offset)
+        for offset in range(41, 41 + len(trades))
+    ]
 
     consumer = Mock()
     consumer.poll.side_effect = messages
@@ -334,10 +352,10 @@ def test_retries_failed_publication_when_no_new_trade_arrives():
         ),
     ]
 
-    messages = [Mock(), Mock()]
-
-    for message in messages:
-        message.value.return_value = b"serialized-trade"
+    messages = [
+        make_kafka_message(offset=offset)
+        for offset in range(41, 41 + len(trades))
+    ]
 
     consumer = Mock()
     consumer.poll.side_effect = [*messages, None]
@@ -410,8 +428,11 @@ def test_processor_publishes_multiple_finalized_candles():
 
     messages = [Mock() for _ in trades]
 
-    for message in messages:
+    for offset, message in enumerate(messages, start=41):
         message.value.return_value = b"serialized-trade"
+        message.topic.return_value = "market.trades"
+        message.partition.return_value = 0
+        message.offset.return_value = offset
 
     consumer = Mock()
     consumer.poll.side_effect = messages
@@ -706,3 +727,183 @@ def test_processor_does_not_confirm_failed_kafka_commit():
     assert processor.offset_tracker.committable_offset(
         "market.trades", 0
     ) == 43
+
+
+def test_processor_rejects_incorrect_kafka_commit_confirmation():
+    """Reject Kafka confirmations that do not match the requested offset."""
+    message = Mock()
+    message.value.return_value = b"invalid-json"
+    message.topic.return_value = "market.trades"
+    message.partition.return_value = 0
+    message.offset.return_value = 42
+
+    consumer = Mock()
+    consumer.poll.return_value = message
+
+    incorrect_partition = Mock()
+    incorrect_partition.topic = "market.trades"
+    incorrect_partition.partition = 0
+    incorrect_partition.offset = 42
+    incorrect_partition.error = None
+
+    consumer.commit.return_value = [incorrect_partition]
+
+    processor = TradeStreamProcessor(
+        consumer=consumer,
+        deserializer=Mock(
+            side_effect=ValueError("Invalid JSON payload")
+        ),
+        aggregator=Mock(),
+        dlq_publisher=Mock(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Kafka commit confirmation mismatch",
+    ):
+        processor.process_next()
+
+    # An incorrect confirmation must not advance our tracker.
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) == 43
+
+
+def test_processor_retries_failed_offset_commit():
+    """Retry a failed commit without repeating DLQ publication."""
+    message = Mock()
+    message.value.return_value = b"invalid-json"
+    message.topic.return_value = "market.trades"
+    message.partition.return_value = 0
+    message.offset.return_value = 42
+
+    consumer = Mock()
+    consumer.poll.return_value = message
+
+    failed_partition = Mock()
+    failed_partition.topic = "market.trades"
+    failed_partition.partition = 0
+    failed_partition.offset = 43
+    failed_partition.error = KafkaError(KafkaError._TIMED_OUT)
+
+    successful_partition = Mock()
+    successful_partition.topic = "market.trades"
+    successful_partition.partition = 0
+    successful_partition.offset = 43
+    successful_partition.error = None
+
+    consumer.commit.side_effect = [
+        [failed_partition],
+        [successful_partition],
+    ]
+
+    dlq_publisher = Mock()
+
+    processor = TradeStreamProcessor(
+        consumer=consumer,
+        deserializer=Mock(
+            side_effect=ValueError("Invalid JSON payload")
+        ),
+        aggregator=Mock(),
+        dlq_publisher=dlq_publisher,
+    )
+
+    # First attempt: DLQ succeeds, Kafka commit fails.
+    with pytest.raises(RuntimeError, match="Kafka offset commit failed"):
+        processor.process_next()
+
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) == 43
+
+    # No new Kafka message arrives.
+    consumer.poll.return_value = None
+
+    # Retry the pending commit.
+    processor.process_next()
+
+    assert consumer.commit.call_count == 2
+    dlq_publisher.publish.assert_called_once_with(message)
+
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) is None
+
+
+def test_processor_retries_pending_commit_when_new_trade_arrives():
+    """Retry a pending commit even when Kafka keeps delivering messages."""
+    invalid_message = Mock()
+    invalid_message.value.return_value = b"invalid-json"
+    invalid_message.topic.return_value = "market.trades"
+    invalid_message.partition.return_value = 0
+    invalid_message.offset.return_value = 42
+
+    valid_message = Mock()
+    valid_message.value.return_value = b"valid-trade"
+    valid_message.topic.return_value = "market.trades"
+    valid_message.partition.return_value = 0
+    valid_message.offset.return_value = 43
+
+    consumer = Mock()
+    consumer.poll.side_effect = [
+        invalid_message,
+        valid_message,
+    ]
+
+    failed_partition = Mock()
+    failed_partition.topic = "market.trades"
+    failed_partition.partition = 0
+    failed_partition.offset = 43
+    failed_partition.error = KafkaError(KafkaError._TIMED_OUT)
+
+    successful_partition = Mock()
+    successful_partition.topic = "market.trades"
+    successful_partition.partition = 0
+    successful_partition.offset = 43
+    successful_partition.error = None
+
+    consumer.commit.side_effect = [
+        [failed_partition],
+        [successful_partition],
+    ]
+
+    trade = Mock()
+    deserializer = Mock(
+        side_effect=[
+            ValueError("Invalid JSON payload"),
+            trade,
+        ]
+    )
+
+    aggregator = Mock()
+    aggregator.get_ready_windows.return_value = []
+    dlq_publisher = Mock()
+
+    processor = TradeStreamProcessor(
+        consumer=consumer,
+        deserializer=deserializer,
+        aggregator=aggregator,
+        dlq_publisher=dlq_publisher,
+    )
+
+    # First record reaches the DLQ, but its offset commit fails.
+    with pytest.raises(RuntimeError, match="Kafka offset commit failed"):
+        processor.process_next()
+
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) == 43
+
+    # Another message arrives immediately; no idle poll occurs.
+    result = processor.process_next()
+
+    assert result is trade
+    assert consumer.commit.call_count == 2
+
+    dlq_publisher.publish.assert_called_once_with(
+        invalid_message
+    )
+
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) is None
