@@ -360,6 +360,14 @@ def test_retries_failed_publication_when_no_new_trade_arrives():
     consumer = Mock()
     consumer.poll.side_effect = [*messages, None]
 
+    committed_partition = Mock()
+    committed_partition.topic = "market.trades"
+    committed_partition.partition = 0
+    committed_partition.offset = 42
+    committed_partition.error = None
+
+    consumer.commit.return_value = [committed_partition]
+
     deserializer = Mock(side_effect=trades)
     aggregator = TradeBarAggregator()
 
@@ -390,14 +398,21 @@ def test_retries_failed_publication_when_no_new_trade_arrives():
     assert result is None
     assert publisher.publish.call_count == 2
 
+    assert consumer.commit.call_count == 1
+
+    committed_offsets = consumer.commit.call_args.kwargs["offsets"]
+
+    assert len(committed_offsets) == 1
+    assert committed_offsets[0].topic == "market.trades"
+    assert committed_offsets[0].partition == 0
+    assert committed_offsets[0].offset == 42
+
     # Successfully published candle should now be removed.
     with pytest.raises(KeyError):
         aggregator.get_bar(
             "AAPL",
             datetime(2026, 10, 22, 14, 30, tzinfo=timezone.utc),
         )
-
-    consumer.commit.assert_not_called()
 
 
 
@@ -907,3 +922,242 @@ def test_processor_retries_pending_commit_when_new_trade_arrives():
     assert processor.offset_tracker.committable_offset(
         "market.trades", 0
     ) is None
+
+
+def test_processor_associates_accepted_trade_with_candle():
+    trade = MarketTrade(
+        "AAPL",
+        Decimal("200"),
+        10,
+        datetime(2026, 10, 22, 14, 30, 15, tzinfo=timezone.utc),
+        "NASDAQ",
+    )
+
+    message = make_kafka_message(offset=41)
+
+    consumer = Mock()
+    consumer.poll.return_value = message
+
+    deserializer = Mock(return_value=trade)
+    aggregator = TradeBarAggregator()
+
+    processor = TradeStreamProcessor(
+        consumer=consumer,
+        deserializer=deserializer,
+        aggregator=aggregator,
+    )
+
+    assert processor.process_next() == trade
+
+    candle_key = (
+        "AAPL",
+        datetime(2026, 10, 22, 14, 30, tzinfo=timezone.utc),
+    )
+
+    assert processor.offset_tracker.offsets_for_candle(candle_key) == [
+        ("market.trades", 0, 41)
+    ]
+
+    # Aggregation alone must not make the offset committable.
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) is None
+
+
+def test_processor_completes_offsets_after_candle_publication():
+    trades = [
+        MarketTrade(
+            "AAPL",
+            Decimal("200"),
+            10,
+            datetime(2026, 10, 22, 14, 30, 15, tzinfo=timezone.utc),
+            "NASDAQ",
+        ),
+        MarketTrade(
+            "AAPL",
+            Decimal("205"),
+            20,
+            datetime(2026, 10, 22, 14, 32, 10, tzinfo=timezone.utc),
+            "NASDAQ",
+        ),
+    ]
+
+    messages = [
+        make_kafka_message(offset=41),
+        make_kafka_message(offset=42),
+    ]
+
+    consumer = Mock()
+    consumer.poll.side_effect = messages
+
+    deserializer = Mock(side_effect=trades)
+    aggregator = TradeBarAggregator()
+    publisher = Mock()
+
+    processor = TradeStreamProcessor(
+        consumer=consumer,
+        deserializer=deserializer,
+        aggregator=aggregator,
+        publisher=publisher,
+    )
+
+    processor.process_next()
+    processor.process_next()
+
+    # The first candle should have been published.
+    publisher.publish.assert_called_once()
+
+    # Offset 41 belongs to the published candle.
+    # Offset 42 belongs to an unfinished candle.
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) == 42
+
+
+def test_failed_candle_publication_keeps_offsets_pending():
+    trades = [
+        MarketTrade(
+            "AAPL",
+            Decimal("200"),
+            10,
+            datetime(2026, 10, 22, 14, 30, 15, tzinfo=timezone.utc),
+            "NASDAQ",
+        ),
+        MarketTrade(
+            "AAPL",
+            Decimal("205"),
+            20,
+            datetime(2026, 10, 22, 14, 32, 10, tzinfo=timezone.utc),
+            "NASDAQ",
+        ),
+    ]
+
+    consumer = Mock()
+    consumer.poll.side_effect = [
+        make_kafka_message(offset=41),
+        make_kafka_message(offset=42),
+    ]
+
+    publisher = Mock()
+    publisher.publish.side_effect = RuntimeError(
+        "Kafka publishing failed"
+    )
+
+    processor = TradeStreamProcessor(
+        consumer=consumer,
+        deserializer=Mock(side_effect=trades),
+        aggregator=TradeBarAggregator(),
+        publisher=publisher,
+    )
+
+    processor.process_next()
+
+    with pytest.raises(RuntimeError, match="Kafka publishing failed"):
+        processor.process_next()
+
+    candle_key = (
+        "AAPL",
+        datetime(2026, 10, 22, 14, 30, tzinfo=timezone.utc),
+    )
+
+    # The failed candle still owns offset 41.
+    assert processor.offset_tracker.offsets_for_candle(candle_key) == [
+        ("market.trades", 0, 41)
+    ]
+
+    # Neither record is safe to commit.
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) is None
+
+    consumer.commit.assert_not_called()
+
+
+def test_processor_routes_late_trade_to_dlq_and_commits_offset():
+    trade = MarketTrade(
+        "AAPL",
+        Decimal("200"),
+        10,
+        datetime(2026, 10, 22, 14, 30, 15, tzinfo=timezone.utc),
+        "NASDAQ",
+    )
+
+    message = make_kafka_message(offset=41)
+
+    consumer = Mock()
+    consumer.poll.return_value = message
+
+    committed_partition = Mock()
+    committed_partition.topic = "market.trades"
+    committed_partition.partition = 0
+    committed_partition.offset = 42
+    committed_partition.error = None
+
+    consumer.commit.return_value = [committed_partition]
+
+    aggregator = Mock()
+    aggregator.add_trade.side_effect = ValueError(
+        "Trade arrived too late for its window"
+    )
+
+    dlq_publisher = Mock()
+
+    processor = TradeStreamProcessor(
+        consumer=consumer,
+        deserializer=Mock(return_value=trade),
+        aggregator=aggregator,
+        dlq_publisher=dlq_publisher,
+    )
+
+    result = processor.process_next()
+
+    assert result is None
+
+    dlq_publisher.publish.assert_called_once_with(message)
+
+    consumer.commit.assert_called_once_with(
+        offsets=[
+            TopicPartition("market.trades", 0, 42)
+        ],
+        asynchronous=False,
+    )
+
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) is None
+
+
+def test_processor_retries_pending_commits_before_polling():
+    consumer = Mock()
+    consumer.poll.return_value = None
+
+    processor = TradeStreamProcessor(
+        consumer=consumer,
+        deserializer=Mock(),
+        aggregator=Mock(),
+    )
+
+    # Simulate an earlier record whose processing completed,
+    # but whose Kafka offset has not yet been committed.
+    processor.offset_tracker.register(
+        "market.trades", 0, 41
+    )
+    processor.offset_tracker.mark_complete(
+        "market.trades", 0, 41
+    )
+
+    # Simulate a failed Kafka commit.
+    consumer.commit.side_effect = RuntimeError(
+        "Kafka commit unavailable"
+    )
+
+    with pytest.raises(RuntimeError, match="Kafka commit unavailable"):
+        processor.process_next()
+
+    # A failed commit retry must not consume another message.
+    consumer.poll.assert_not_called()
+
+    # The completed offset must remain eligible for retry.
+    assert processor.offset_tracker.committable_offset(
+        "market.trades", 0
+    ) == 42

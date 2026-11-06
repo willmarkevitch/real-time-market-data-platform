@@ -120,3 +120,13 @@ class OffsetTracker:
     def offsets_for_candle(self, candle_key):
         """Return Kafka records associated with a candle."""
         return list(self._candle_offsets.get(candle_key, []))
+
+
+    def complete_candle(self, candle_key):
+        """Mark all records for a published candle as complete."""
+        records = self._candle_offsets.get(candle_key, [])
+
+        for topic, partition, offset in records:
+            self.mark_complete(topic, partition, offset)
+
+        self._candle_offsets.pop(candle_key, None)

@@ -213,3 +213,89 @@ def test_tracker_rejects_unknown_offset_in_registered_partition():
         )
 
     assert tracker.offsets_for_candle(candle_key) == []
+
+
+def test_tracker_completes_only_records_for_published_candle():
+    tracker = OffsetTracker()
+
+    aapl_candle = ("AAPL", "2026-10-22T14:30:00+00:00")
+    msft_candle = ("MSFT", "2026-10-22T14:30:00+00:00")
+
+    for offset in (41, 42, 43):
+        tracker.register("market.trades", 0, offset)
+
+    tracker.associate_candle(
+        "market.trades", 0, 41, aapl_candle
+    )
+    tracker.associate_candle(
+        "market.trades", 0, 42, aapl_candle
+    )
+    tracker.associate_candle(
+        "market.trades", 0, 43, msft_candle
+    )
+
+    tracker.complete_candle(aapl_candle)
+
+    # Only the AAPL records should become committable.
+    assert tracker.committable_offset("market.trades", 0) == 43
+
+    # MSFT must remain pending.
+    assert tracker.offsets_for_candle(msft_candle) == [
+        ("market.trades", 0, 43)
+    ]
+
+    # Completed candle metadata should be removed.
+    assert tracker.offsets_for_candle(aapl_candle) == []
+
+
+def test_tracker_completing_candle_twice_is_idempotent():
+    tracker = OffsetTracker()
+
+    candle_key = ("AAPL", "2026-10-22T14:30:00+00:00")
+
+    tracker.register("market.trades", 0, 41)
+    tracker.associate_candle(
+        "market.trades", 0, 41, candle_key
+    )
+
+    # First completion.
+    tracker.complete_candle(candle_key)
+
+    assert tracker.committable_offset("market.trades", 0) == 42
+    assert tracker.offsets_for_candle(candle_key) == []
+
+    # Repeating the operation must not change the result.
+    tracker.complete_candle(candle_key)
+
+    assert tracker.committable_offset("market.trades", 0) == 42
+    assert tracker.offsets_for_candle(candle_key) == []
+
+
+def test_tracker_handles_candles_completed_out_of_order():
+    tracker = OffsetTracker()
+
+    aapl_candle = ("AAPL", "2026-10-22T14:30:00+00:00")
+    msft_candle = ("MSFT", "2026-10-22T14:30:00+00:00")
+
+    for offset in (41, 42, 43):
+        tracker.register("market.trades", 0, offset)
+
+    tracker.associate_candle(
+        "market.trades", 0, 41, aapl_candle
+    )
+    tracker.associate_candle(
+        "market.trades", 0, 42, msft_candle
+    )
+    tracker.associate_candle(
+        "market.trades", 0, 43, aapl_candle
+    )
+
+    # MSFT publishes first, but offset 41 is still pending.
+    tracker.complete_candle(msft_candle)
+
+    assert tracker.committable_offset("market.trades", 0) is None
+
+    # AAPL publishes second, completing all remaining records.
+    tracker.complete_candle(aapl_candle)
+
+    assert tracker.committable_offset("market.trades", 0) == 44
