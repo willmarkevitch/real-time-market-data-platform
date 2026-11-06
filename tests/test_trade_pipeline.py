@@ -30,6 +30,11 @@ def test_trade_pipeline_publishes_completed_candle():
     )
 
     messages = [Mock(), Mock()]
+    for offset, message in enumerate(messages, start=41):
+        message.topic.return_value = "market.trades"
+        message.partition.return_value = 0
+        message.offset.return_value = offset
+
     consumer = Mock()
     consumer.poll.side_effect = messages
 
@@ -115,8 +120,15 @@ def test_trade_pipeline_preserves_candle_when_kafka_fails():
         ),
     )
 
+    messages = [Mock(), Mock()]
+
+    for offset, message in enumerate(messages, start=41):
+        message.topic.return_value = "market.trades"
+        message.partition.return_value = 0
+        message.offset.return_value = offset
+
     consumer = Mock()
-    consumer.poll.side_effect = [Mock(), Mock()]
+    consumer.poll.side_effect = messages
 
     deserializer = Mock(
         side_effect=[first_trade, second_trade]
