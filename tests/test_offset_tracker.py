@@ -86,3 +86,38 @@ def test_tracker_rejects_commit_beyond_completed_offsets():
 
     # A rejected confirmation must not change tracker state.
     assert tracker.committable_offset("market.trades", 0) == 42
+
+
+def test_tracker_rejects_out_of_order_registration():
+    tracker = OffsetTracker()
+
+    tracker.register("market.trades", 0, 43)
+
+    # Kafka offsets within a partition should be registered
+    # in increasing order.
+    with pytest.raises(
+        ValueError,
+        match="Offsets must be registered in increasing order",
+    ):
+        tracker.register("market.trades", 0, 41)
+
+
+def test_tracker_rejects_confirmation_inside_offset_gap():
+    tracker = OffsetTracker()
+
+    tracker.register("market.trades", 0, 41)
+    tracker.register("market.trades", 0, 43)
+
+    tracker.mark_complete("market.trades", 0, 41)
+    tracker.mark_complete("market.trades", 0, 43)
+
+    assert tracker.committable_offset("market.trades", 0) == 44
+
+    with pytest.raises(
+        ValueError,
+        match="Commit offset must follow a completed record",
+    ):
+        tracker.confirm_commit("market.trades", 0, 43)
+
+    # Invalid confirmation must not alter state.
+    assert tracker.committable_offset("market.trades", 0) == 44

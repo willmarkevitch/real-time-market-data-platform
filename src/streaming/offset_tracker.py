@@ -5,16 +5,26 @@ class OffsetTracker:
         self._partitions = {}
 
     def register(self, topic, partition, offset):
-        """Register a consumed Kafka record as pending."""
+        """Register consumed Kafka records in increasing offset order."""
         key = (topic, partition)
 
         if key not in self._partitions:
             self._partitions[key] = {
                 "next_offset": offset,
                 "records": {},
+                "last_registered_offset": None,
             }
 
-        self._partitions[key]["records"][offset] = False
+        state = self._partitions[key]
+        last_offset = state["last_registered_offset"]
+
+        if last_offset is not None and offset <= last_offset:
+            raise ValueError(
+                "Offsets must be registered in increasing order"
+            )
+
+        state["records"][offset] = False
+        state["last_registered_offset"] = offset
 
     def mark_complete(self, topic, partition, offset):
         """Mark a record as durably processed."""
@@ -59,19 +69,24 @@ class OffsetTracker:
     def confirm_commit(self, topic, partition, offset):
         """Discard completed records after Kafka confirms a commit."""
         state = self._partitions[(topic, partition)]
-
         next_offset = state["next_offset"]
+        records = state["records"]
 
         if offset < next_offset:
             raise ValueError("Cannot confirm an older offset")
 
-        if self.committable_offset(topic, partition) is None:
+        committable = self.committable_offset(topic, partition)
+
+        if committable is None:
             raise ValueError("No completed offsets to commit")
 
-        if offset > self.committable_offset(topic, partition):
+        if offset > committable:
             raise ValueError("Cannot commit past incomplete records")
 
-        records = state["records"]
+        if offset - 1 not in records or not records[offset - 1]:
+            raise ValueError(
+                "Commit offset must follow a completed record"
+            )
 
         for completed_offset in list(records):
             if completed_offset < offset:
