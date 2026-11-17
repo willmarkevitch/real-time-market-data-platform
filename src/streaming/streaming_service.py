@@ -9,7 +9,7 @@ from src.ingestion.dlq_publisher import DeadLetterPublisher
 
 
 def create_stream_processor(
-    bootstrap_servers: str = "localhost:9092",
+    bootstrap_servers: str = "127.0.0.1:9092",
     group_id: str = "market-candle-aggregators",
     offset_reset: str = "earliest",
 ) -> TradeStreamProcessor:

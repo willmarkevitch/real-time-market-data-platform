@@ -115,3 +115,26 @@ def test_create_stream_processor_configures_dlq_publisher():
     )
 
     assert processor.dlq_publisher is mock_dlq.return_value
+
+
+
+def test_create_stream_processor_uses_ipv4_bootstrap_by_default():
+    """Default Kafka connections should use IPv4 loopback."""
+
+    with (
+        patch("src.streaming.streaming_service.Consumer") as mock_consumer,
+        patch("src.streaming.streaming_service.Producer") as mock_producer,
+        patch("src.streaming.streaming_service.DeadLetterPublisher") as mock_dlq,
+    ):
+        create_stream_processor()
+
+    consumer_config = mock_consumer.call_args.args[0]
+    producer_config = mock_producer.call_args.args[0]
+
+    assert consumer_config["bootstrap.servers"] == "127.0.0.1:9092"
+    assert producer_config["bootstrap.servers"] == "127.0.0.1:9092"
+
+    mock_dlq.assert_called_once_with(
+        bootstrap_servers="127.0.0.1:9092",
+        topic="market.trades.dlq",
+    )
