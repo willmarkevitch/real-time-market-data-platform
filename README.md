@@ -4,231 +4,301 @@
 ![Python](https://img.shields.io/badge/Python-3.14-blue)
 ![Apache Kafka](https://img.shields.io/badge/Apache%20Kafka-4.1.1-black)
 ![Docker](https://img.shields.io/badge/Docker-Compose-blue)
-![Tests](https://img.shields.io/badge/Tests-77%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-144%20passing-brightgreen)
 
-An event-driven data engineering project that ingests U.S. equity trade events from **Alpaca**, normalizes and validates them, and streams them through **Apache Kafka**. The project emphasizes reliable message delivery, explicit data contracts, failure handling, and test-driven development.
+An event-driven data engineering project built with **Python, Apache Kafka, and Docker** that ingests U.S. equity trades and processes them into **one-minute OHLCV candlesticks and volume-weighted average prices (VWAP)**.
 
-**Current status:** WebSocket ingestion, Kafka publishing and consumption, dead-letter handling, and automated tests are implemented. Streaming aggregations and PostgreSQL persistence are planned next.
+The platform supports Alpaca market-data ingestion and a deterministic synthetic replay for demonstrations without API credentials or live market hours. It emphasizes typed data contracts, financial precision, event-time aggregation, dead-letter handling, delivery-confirmed publishing, and partition-aware offset management.
+
+**Current milestone:** The local end-to-end pipeline has been demonstrated successfully: five synthetic AAPL trades were published to Kafka and aggregated into a verified one-minute candle. **144 automated tests passed** at this milestone. PostgreSQL persistence, monitoring, and production deployment are future work.
 
 ## Architecture
 
 ```text
-Alpaca market-data WebSocket
-             |
-             v
-    Trade normalization
-             |
-             v
-     MarketTrade model
-             |
-             v
-     JSON serialization
-             |
-             v
-       Kafka producer
-             |
-             v
-   Kafka topic: market.trades
-             |
-             v
-       Kafka consumer
-             |
-             v
-  Deserialize and validate
-             |
-       +-----+------+
-       |            |
-       v            v
-  Valid trade   Invalid payload
-       |            |
-       v            v
- Processing      DLQ publisher
-  callback           |
-       |             v
-       |     market.trades.dlq
-       |
-       v
-  Future: OHLCV/VWAP aggregation
-          and PostgreSQL
+    Alpaca market-data WebSocket       Synthetic demo replay
+                 |                              |
+                 v                              |
+        Normalize and validate                  |
+                 |                              |
+                 v                              v
+            MarketTrade model / JSON serialization
+                              |
+                              v
+                     Kafka trade producer
+                              |
+                              v
+                      market.trades
+                              |
+                              v
+                    Streaming service
+                     /             \
+                    v               v
+           Valid trade        Invalid / rejected trade
+                |                      |
+                v                      v
+       Event-time aggregation      DLQ publisher
+       1-minute OHLCV + VWAP            |
+                |                      v
+                v               market.trades.dlq
+       Candle publisher
+                |
+                v
+        market.candles.1m
 ```
 
-A valid trade is committed **after successful downstream processing**. An invalid payload is committed **after confirmed publication to the dead-letter topic**. If processing or dead-letter publication fails, the processing function does not commit the source offset, allowing the record to be replayed after recovery. This is an **at-least-once** design, not exactly-once processing; downstream operations should be idempotent where necessary.
+The streaming processor tracks source offsets by Kafka topic/partition and coordinates offset commits with downstream handling. A completed candle is published before the associated eligible source offsets are acknowledged; rejected records are routed to the dead-letter topic. The design targets **at-least-once processing**, not exactly-once results: a crash between downstream publication and source-offset commit can cause replay and duplicate output.
 
-## Implemented Features
+### Kafka topics
 
-### Market-Data Ingestion and Data Contracts
+| Topic | Partitions | Purpose |
+| --- | ---: | --- |
+| `market.trades` | 3 | Serialized trade events, keyed by symbol |
+| `market.trades.dlq` | 3 | Rejected records and source metadata for investigation |
+| `market.candles.1m` | 1 | Completed one-minute OHLCV/VWAP candles |
 
-- **Alpaca WebSocket integration:** Receives trade events from Alpaca's market-data stream.
-- **Typed domain model:** Converts provider-specific events into a `MarketTrade` model with symbol, price, size, timestamp, and exchange.
-- **Financial precision:** Represents prices with Python `Decimal` rather than binary floating-point arithmetic.
-- **Input validation:** Rejects invalid prices, nonpositive or fractional sizes, missing metadata, and timestamps without timezone information.
-- **Serialization:** Encodes normalized trades as UTF-8 JSON for Kafka transport and deserializes them on consumption.
+The single-node broker and replication factor of one are suitable for local development, **not high-availability production use**.
 
-### Kafka Messaging and Reliability
+## Features
 
-- **Kafka producer:** Publishes normalized trades to `market.trades`, using the stock symbol as the message key.
-- **Delivery handling:** Uses delivery callbacks, failure tracking, and producer flushing during shutdown.
-- **Kafka consumer:** Supports configurable bootstrap servers, consumer groups, and subscribed topics.
-- **Manual offset management:** Disables automatic commits and commits only after successful processing or dead-letter delivery.
-- **Dead-letter queue (DLQ):** Sends malformed trade records to `market.trades.dlq`, preserving the original payload and key.
-- **Source metadata:** Adds `original_topic`, `original_partition`, and `original_offset` headers to dead-letter records for investigation.
-- **Consumer runner:** Provides a continuous processing loop with cleanup on keyboard interruption.
+### Ingestion and data contracts
 
-### Local Infrastructure
+- **Alpaca integration:** Receives market-data trade events through a WebSocket client.
+- **Typed trade model:** Represents symbol, price, size, timestamp, and exchange using a `MarketTrade` dataclass.
+- **Financial precision:** Uses Python `Decimal` for trade prices and derived price calculations.
+- **Validation:** Rejects invalid prices, nonpositive or fractional sizes, missing metadata, and timezone-naive timestamps.
+- **Kafka serialization:** Encodes trades as JSON and reconstructs validated domain objects when consuming.
+- **Deterministic replay:** Publishes five synthetic AAPL trades, then flushes the producer to confirm delivery.
 
-- **Docker Compose:** Runs Apache Kafka 4.1.1 in single-node KRaft mode.
-- **Topic initialization:** Creates `market.trades` and `market.trades.dlq` with three partitions each.
-- **Persistent broker data:** Uses a named Docker volume so ordinary container restarts do not erase Kafka data.
-- **Host/container networking:** Exposes Kafka to local Python processes on `127.0.0.1:9092` and uses an internal Docker listener for container communication.
+### Stream processing
 
-> **Development environment:** Kafka runs with a replication factor of one. This setup is intended for local development, not high-availability production deployment.
+- **Event-time aggregation:** Groups trades into one-minute windows by symbol, calculating open, high, low, close, volume, and VWAP.
+- **Allowed lateness:** Uses a 30-second event-time lateness allowance in the streaming service.
+- **Candle publishing:** Publishes completed candles to `market.candles.1m`.
+- **Dead-letter handling:** Routes malformed or rejected records to `market.trades.dlq`, retaining source metadata for debugging.
+- **Partition-aware offsets:** Tracks processed Kafka offsets and manages eligible contiguous commits, including commit retries.
+- **Delivery confirmation:** Coordinates downstream publishing and offset acknowledgment to support at-least-once recovery.
 
-## Technology Stack
+### Local infrastructure and engineering workflow
+
+- **Docker Compose:** Runs Apache Kafka 4.1.1 in single-node KRaft mode and initializes the three topics.
+- **Persistent Kafka storage:** Uses a named Docker volume across ordinary container restarts.
+- **Automated tests:** Uses pytest, mocks, and broker-backed integration tests; 144 tests passed at the documented milestone.
+- **CI:** GitHub Actions runs the broker-independent test suite on pushes and pull requests.
+- **Development process:** Built incrementally with test-driven development, feature branches, and pull requests.
+
+## Technology stack
 
 | Area | Technology |
 | --- | --- |
 | Language | Python 3.14 |
-| Market-data source | Alpaca API and WebSocket |
-| Streaming platform | Apache Kafka 4.1.1 |
-| Kafka Python client | `confluent-kafka` |
-| Data representation | Python dataclasses, `Decimal`, JSON |
+| Market-data source | Alpaca API / WebSocket |
+| Event streaming | Apache Kafka 4.1.1, `confluent-kafka` |
+| Data representation | Dataclasses, `Decimal`, JSON |
 | Infrastructure | Docker, Docker Compose |
-| Testing | pytest, unittest mocking, Kafka integration tests |
+| Testing | pytest, `unittest.mock`, Kafka integration tests |
 | Continuous integration | GitHub Actions |
-| Version control | Git, GitHub pull requests |
+| Version control | Git and GitHub pull requests |
 
-## Getting Started
+## Quick start: run the end-to-end demo
+
+The demo uses **synthetic trades** and does **not** require Alpaca credentials, an active market session, or access to live market data.
 
 ### Prerequisites
 
 - Python 3.14
 - Docker Desktop with Docker Compose
-- An Alpaca account and market-data API credentials **for live ingestion**
+- Git
 
-Kafka and synthetic-message integration tests do not require Alpaca credentials.
-
-### 1. Clone the Repository
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/willmarkevitch/real-time-market-data-platform.git
 cd real-time-market-data-platform
 ```
 
-### 2. Create and Activate a Virtual Environment
+### 2. Create a virtual environment and install dependencies
 
-On Windows using Git Bash:
+**Windows (Git Bash):**
 
 ```bash
 python -m venv venv
 source venv/Scripts/activate
+python -m pip install -r requirements-dev.txt
 ```
 
-On macOS/Linux:
+**macOS/Linux:**
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-```
-
-### 3. Install Dependencies
-
-```bash
 python -m pip install -r requirements-dev.txt
 ```
 
-`requirements-dev.txt` includes the application dependencies from `requirements.txt` plus pytest.
+### 3. Start Kafka
 
-### 4. Configure Alpaca Credentials (for Live Ingestion)
+```bash
+docker compose up -d
+docker compose ps
+```
 
-Copy `.env.example` to a local `.env` file and replace the placeholders with your credentials:
+The `kafka-init` service creates `market.trades`, `market.trades.dlq`, and `market.candles.1m`. Wait for topic initialization to finish before starting the demo. If necessary, rerun initialization:
+
+```bash
+docker compose run --rm kafka-init
+```
+
+### 4. Start the streaming service (terminal 1)
+
+From the repository root, with your virtual environment active:
+
+```bash
+python -m src.streaming.streaming_service
+```
+
+Leave this process running. It consumes trades from `market.trades` and publishes finalized candles.
+
+### 5. Replay synthetic trades (terminal 2)
+
+Open a second terminal in the repository root, activate the same virtual environment, and run:
+
+```bash
+python -m src.ingestion.demo_replay
+```
+
+Expected confirmation:
+
+```text
+Successfully published 5 demo trades to Kafka.
+```
+
+The five deterministic AAPL trades have event timestamps in January 2026. Four belong to the 14:30 UTC minute; a fifth trade at 14:31:31 UTC advances the event-time watermark enough to finalize the earlier candle under the 30-second lateness allowance.
+
+### 6. Inspect the output candle (terminal 3)
+
+**Windows Git Bash:**
+
+```bash
+MSYS_NO_PATHCONV=1 docker exec market-data-kafka \
+  /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9094 \
+  --topic market.candles.1m \
+  --from-beginning \
+  --timeout-ms 10000
+```
+
+**macOS/Linux:** Use the same command without the `MSYS_NO_PATHCONV=1` prefix.
+
+Expected candle from a fresh demo run (JSON key ordering may differ):
+
+```json
+{
+  "symbol": "AAPL",
+  "window_start": "2026-01-05T14:30:00+00:00",
+  "open": "250.00",
+  "high": "252.00",
+  "low": "249.00",
+  "close": "251.00",
+  "volume": 50,
+  "vwap": "250.60"
+}
+```
+
+The VWAP is the sum of each trade's price multiplied by its size, divided by the total size:
+
+```text
+(250.00 × 10 + 252.00 × 20 + 249.00 × 15 + 251.00 × 5) / 50 = 250.60
+```
+
+**Note:** The Kafka console consumer may print a `TimeoutException` after 10 seconds of inactivity. This is expected with `--timeout-ms 10000` and does not indicate that candle generation failed if the candle appeared. The `--from-beginning` option also shows any previously retained candles, not just this run's output.
+
+### 7. Stop the services
+
+Press **Ctrl+C** in terminal 1 to stop the Python streaming service gracefully. Then stop the Docker environment:
+
+```bash
+docker compose down
+```
+
+This retains Kafka's named data volume. **Do not run `docker compose down -v` unless you intend to delete the persisted Kafka data.**
+
+### Repeating the demo from a clean Kafka state
+
+Kafka retains messages and consumer-group offsets across ordinary restarts. Replaying the same synthetic timestamps into an existing broker may produce different visible results or duplicate candles because this pipeline is not idempotent or exactly-once.
+
+For an isolated local demo, you can reset the **development-only** Kafka volume:
+
+```bash
+docker compose down -v
+docker compose up -d
+```
+
+**Warning:** `down -v` permanently deletes the project's persisted Kafka messages and offsets. Do not use it on data you need to keep. Wait for topic initialization, then repeat steps 4–6.
+
+## Running tests
+
+Run broker-independent tests without Docker:
+
+```bash
+python -m pytest -m "not integration" -q
+```
+
+With Kafka running, run the marked broker-backed integration tests:
+
+```bash
+python -m pytest -m integration -v
+```
+
+Run the full suite:
+
+```bash
+python -m pytest -v
+```
+
+**Test milestone:** 144 passing tests, covering data models, validation, serialization, producers/consumers, aggregation, offset tracking, stream processing, dead-letter behavior, demo replay, and Kafka integration. This count is a point-in-time result, not a dynamically updated CI badge.
+
+GitHub Actions runs the non-integration suite on pushes and pull requests. Kafka-backed integration tests currently run locally rather than in CI.
+
+## Live ingestion configuration
+
+The synthetic replay above needs no credentials. For Alpaca ingestion, copy `.env.example` to `.env` and set:
 
 ```dotenv
 ALPACA_API_KEY=your_api_key_here
 ALPACA_SECRET_KEY=your_secret_key_here
 ```
 
-**Never commit your `.env` file or API credentials.** The repository's `.gitignore` excludes `.env`.
+**Never commit `.env` or actual API credentials.** The repository's `.gitignore` excludes `.env`. The live-ingestion components are separate from the deterministic demo entry point; the quick-start instructions above specifically demonstrate the synthetic Kafka pipeline.
 
-### 5. Start Kafka
+## Selected engineering decisions
 
-```bash
-docker compose up -d
-```
+**Why Kafka?** Kafka separates trade ingestion from downstream computation, supports replayable event logs and consumer groups, and allows partitioned processing.
 
-Check container status:
+**Why key by stock symbol?** Using the symbol as the Kafka message key preserves ordering for that symbol within a partition under the active partitioning scheme.
 
-```bash
-docker compose ps
-```
+**Why `Decimal`?** Decimal arithmetic avoids binary floating-point representation artifacts that can be problematic when working with financial prices.
 
-The `kafka-init` service creates the two required topics. If you need to rerun topic initialization explicitly:
+**Why event time rather than processing time?** A trade belongs to the minute represented by its event timestamp, not the minute in which the consumer happened to receive it. A watermark and allowed-lateness threshold determine when a window can be finalized.
 
-```bash
-docker compose run --rm kafka-init
-```
+**Why manual offset management?** A source offset should not be acknowledged before the corresponding record is handled. Tracking contiguous processed offsets per partition helps avoid committing past unfinished records.
 
-To stop the environment without deleting persisted Kafka data:
+**Why a dead-letter topic?** Invalid events can be inspected separately rather than silently discarded or repeatedly blocking normal processing.
 
-```bash
-docker compose down
-```
+**Why separate unit and integration tests?** Fast, deterministic tests run in CI without a broker; Kafka-backed tests verify interactions with a real broker in local development.
 
-Avoid `docker compose down -v` unless you intentionally want to delete the broker's persistent volume.
+## Reliability and limitations
 
-### 6. Verify the Pipeline with Tests
+This is a **local portfolio and learning project**, not a production-grade trading system.
 
-Run the fast unit-test suite (no Kafka broker required):
+- **At-least-once, not exactly-once:** A crash after a candle is published but before the input offset is committed can lead to duplicate publication on replay.
+- **In-memory processing state:** Aggregation and offset-tracking state are not durably checkpointed across process restarts.
+- **Event-time watermark:** A candle may remain pending if no sufficiently later event arrives. Idle wall-clock time alone does not finalize it in this demo.
+- **Local Kafka:** One broker and replication factor one provide no broker redundancy.
+- **Demo replay:** Fixed timestamps and retained Kafka data mean repeated runs are not inherently isolated or idempotent.
+- **Persistence and operations:** PostgreSQL storage, metrics, alerting, and production deployment are not yet implemented.
 
-```bash
-python -m pytest -m "not integration" -q
-```
+These limitations motivate future work on durable state, idempotent output handling, observability, and more robust deployment.
 
-With Kafka running, run the integration tests:
-
-```bash
-python -m pytest -m integration -v
-```
-
-To run everything:
-
-```bash
-python -m pytest -v
-```
-
-The repository also contains a simulated trade-pipeline smoke script at `tests/integration/smoke_trade_pipeline.py` for development verification. The current implementation is composed of reusable ingestion and consumer components; a unified production application entry point is not yet provided.
-
-## Testing and CI
-
-At the current milestone, the project has **77 passing tests**:
-
-| Suite | Tests | What it verifies |
-| --- | ---: | --- |
-| Unit tests | 75 | Models, validation, normalization, serialization, Kafka wrappers, processing, DLQ behavior, and shutdown logic |
-| Kafka integration tests | 2 | Real broker message consumption, dead-letter delivery, source metadata, and committed offsets |
-
-GitHub Actions runs the unit-test suite on pushes and pull requests using Python 3.14 on Ubuntu:
-
-```bash
-python -m pytest -m "not integration" -q
-```
-
-The Kafka integration tests currently run locally against Docker and are **not** part of CI. They use shared development topics; isolated test topics and automated Kafka-backed CI are planned improvements.
-
-## Selected Engineering Decisions
-
-**Why Kafka?** Kafka decouples the incoming market-data feed from downstream processing. It also supports replayable events, consumer groups, and partitioned processing.
-
-**Why key messages by symbol?** Kafka sends messages with the same key to the same partition under the active partitioning scheme, preserving per-partition order for a symbol while allowing multiple symbols to be distributed across partitions.
-
-**Why `Decimal`?** Decimal arithmetic avoids binary floating-point representation artifacts in financial values.
-
-**Why manual offset commits?** Committing only after successful processing or confirmed DLQ delivery avoids acknowledging a record before the application has handled it. This supports at-least-once recovery semantics, though failures between side effects and commits can still cause duplicates.
-
-**Why a dead-letter topic?** Invalid payloads remain available for inspection and reprocessing instead of being silently dropped or repeatedly blocking normal consumption.
-
-**Why separate unit and integration tests?** Fast, deterministic tests can run on every pull request, while broker-backed tests verify real Kafka behavior without requiring external services in the basic CI job.
-
-## Project Layout
+## Project layout
 
 ```text
 real-time-market-data-platform/
@@ -236,23 +306,26 @@ real-time-market-data-platform/
 │   └── workflows/
 │       └── ci.yml
 ├── src/
-│   ├── config/
 │   ├── ingestion/
-│   │   ├── consumer_runner.py
-│   │   ├── dlq_publisher.py
-│   │   ├── kafka_consumer.py
+│   │   ├── demo_replay.py
 │   │   ├── kafka_producer.py
+│   │   ├── kafka_consumer.py
+│   │   ├── dlq_publisher.py
 │   │   ├── normalizer.py
-│   │   ├── trade_deserializer.py
-│   │   ├── trade_processor.py
 │   │   ├── trade_serializer.py
+│   │   ├── trade_deserializer.py
 │   │   └── websocket_client.py
-│   └── models/
-│       ├── market_trade.py
-│       └── trade_validation.py
+│   ├── models/
+│   │   └── market_trade.py
+│   └── streaming/
+│       ├── streaming_service.py
+│       ├── trade_aggregator.py
+│       ├── trade_stream_processor.py
+│       ├── offset_tracker.py
+│       ├── kafka_candle_publisher.py
+│       └── trade_bar_serializer.py
 ├── tests/
 │   ├── integration/
-│   │   └── test_kafka_consumer_integration.py
 │   └── test_*.py
 ├── compose.yaml
 ├── pytest.ini
@@ -262,34 +335,31 @@ real-time-market-data-platform/
 └── README.md
 ```
 
-The diagram highlights key files rather than every module or test.
+This is a selected-file overview rather than an exhaustive listing.
 
 ## Roadmap
 
-### Next: Streaming Aggregation
+### Completed
 
-- [ ] Aggregate trades into **one-minute OHLCV candles** by symbol.
-- [ ] Calculate **volume-weighted average price (VWAP)**.
-- [ ] Define event-time windowing behavior and tests for out-of-order events.
-- [ ] Connect aggregation to the Kafka consumer processing path.
+- [x] Typed market-trade model, normalization, and validation
+- [x] Alpaca WebSocket ingestion components
+- [x] Kafka producer/consumer integration and dead-letter handling
+- [x] One-minute event-time OHLCV and VWAP aggregation
+- [x] Candle publishing to Kafka
+- [x] Partition-aware offset tracking and commit retry handling
+- [x] Deterministic end-to-end synthetic replay
+- [x] Automated tests and GitHub Actions unit-test CI
 
-### Next: Persistence and Querying
+### Planned
 
-- [ ] Persist trade-derived data in PostgreSQL.
-- [ ] Design schemas and idempotent writes for at-least-once consumption.
-- [ ] Support queries by symbol and time range.
+- [ ] PostgreSQL persistence and queryable historical candles
+- [ ] Idempotent writes or other duplicate-mitigation strategy
+- [ ] Durable processing state and improved recovery behavior
+- [ ] Isolated Kafka integration tests in CI
+- [ ] Structured logging, metrics, consumer-lag monitoring, and alerts
+- [ ] Dashboard or API for recent market activity
+- [ ] Deployment and scaling beyond a single local Kafka broker
 
-### Later Improvements
+## Development approach
 
-- [ ] Isolate Kafka integration tests and run them in CI.
-- [ ] Add a runnable application entry point and operational configuration.
-- [ ] Improve structured logging, metrics, and shutdown handling.
-- [ ] Track consumer lag, delivery failures, and processing latency.
-- [ ] Explore a dashboard or API for querying recent market activity.
-- [ ] Evaluate deployment and scaling options beyond local Docker.
-
-## Development Approach
-
-This project is built incrementally using **test-driven development**, feature branches, pull requests, and GitHub Actions. Each milestone focuses on a specific engineering concern—data contracts, message delivery, fault handling, and, next, stream processing and persistence.
-
-The goal is to build an understandable, testable streaming system while documenting the tradeoffs involved in moving from a basic market-data API integration toward a more complete data platform.
+This project is built incrementally through **test-driven development**, focused feature branches, code reviews via GitHub pull requests, and automated CI. Each milestone isolates an engineering concern—data contracts, Kafka delivery, fault handling, stream aggregation, offset management, or reproducible demonstrations—so the system remains explainable and testable as it grows.
